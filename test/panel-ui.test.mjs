@@ -32,6 +32,10 @@ import {
   translationKeys,
 } from "../apps/panel/i18n.mjs";
 
+// Label assertions below intentionally use the English catalog, regardless
+// of the machine's navigator.language default.
+setLanguage("en");
+
 test("model picker search matches names, slugs, and provider labels", () => {
   const model = {
     displayName: "Ox Alpha (OpenCode Free)",

@@ -882,7 +882,13 @@ switch ($Command) {
   "caller-key" { Invoke-RouterNode "src\caller-key.mjs" $Arguments }
   "key-pool" { Invoke-RouterNode "src\control.mjs" (@("key-pool") + $Arguments) }
   "activity" { Invoke-RouterNode "src\control.mjs" (@("activity") + $Arguments) }
-  "search-sidecar" { Invoke-RouterNode "src\search-sidecar-control.mjs" $Arguments }
+  "search-sidecar" {
+    if ($Target -ne "codex") {
+      [Console]::Error.WriteLine("search-sidecar is supported only for the Codex target.")
+      exit 2
+    }
+    Invoke-RouterNode "src\search-sidecar-control.mjs" $Arguments
+  }
   "chatgpt-session" { Invoke-RouterNode "src\chatgpt-session.mjs" $Arguments }
   "skills" { Invoke-RouterNode "src\skills-install.mjs" $Arguments }
   # `bin/install` accepts --prepare-only/--migrate-known/--force-deps, so the

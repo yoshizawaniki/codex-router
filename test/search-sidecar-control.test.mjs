@@ -116,7 +116,10 @@ test("search sidecar control rejects unknown options and unsafe or ineligible bi
 });
 
 test("the top-level wrapper refuses this Codex-only control on other targets", () => {
-  const result = spawnSync("sh", ["bin/model-router", "dsh", "search-sidecar", "status"], {
+  const windows = process.platform === "win32";
+  const result = spawnSync(windows ? "powershell.exe" : "sh", windows
+    ? ["-NoProfile", "-NonInteractive", "-File", "model-router.ps1", "dsh", "search-sidecar", "status"]
+    : ["bin/model-router", "dsh", "search-sidecar", "status"], {
     cwd: root,
     encoding: "utf8",
     env: process.env,
