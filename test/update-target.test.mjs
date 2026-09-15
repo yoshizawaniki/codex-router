@@ -12,6 +12,7 @@ import {
   installationNeedsRefresh,
   localModificationsMessage,
   parseArguments,
+  revisionUpdateStatus,
   resolveCommand,
   trayRefreshRequired,
 } from "../src/update.mjs";
@@ -63,6 +64,16 @@ test("an update reinstalls a revision pulled outside the updater", () => {
   assert.equal(
     installationNeedsRefresh({ current: { commit: "new-revision" } }, "new-revision"),
     false,
+  );
+});
+
+test("update check only advertises a fast-forward, not local commits ahead of origin", () => {
+  assert.equal(revisionUpdateStatus("same", "same", "same").updateAvailable, false);
+  assert.equal(revisionUpdateStatus("old", "new", "old").updateAvailable, true);
+  assert.equal(revisionUpdateStatus("local", "origin", "origin").updateAvailable, false);
+  assert.throws(
+    () => revisionUpdateStatus("local", "origin", "common"),
+    /diverged.*replay local commits/,
   );
 });
 

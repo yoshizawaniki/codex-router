@@ -211,7 +211,19 @@ export function checkForUpdate() {
   git(["fetch", "--quiet", "origin", "main"]);
   const current = git(["rev-parse", "HEAD"]);
   const available = git(["rev-parse", "origin/main"]);
-  return { current, available, updateAvailable: current !== available };
+  const mergeBase = current === available ? current : git(["merge-base", current, available]);
+  return revisionUpdateStatus(current, available, mergeBase);
+}
+
+export function revisionUpdateStatus(current, available, mergeBase) {
+  if (current !== available && mergeBase !== current && mergeBase !== available) {
+    throw new Error("The managed checkout and origin/main have diverged; replay local commits onto the new mainline manually before updating.");
+  }
+  return {
+    current,
+    available,
+    updateAvailable: current !== available && mergeBase === current,
+  };
 }
 
 export function installationNeedsRefresh(manifest, revision) {
