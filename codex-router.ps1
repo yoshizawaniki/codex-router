@@ -388,12 +388,7 @@ function Restore-ControlCenterTaskSnapshot($TaskSnapshot) {
       $Restored.Sid -ne $Expected.Sid) {
     throw "The prior tray task did not retain its exact action and principal after restoration."
   }
-  $ExpectedDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new([string]$TaskSnapshot.Sddl)
-  $ActualDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new((Get-ControlCenterTaskSddl $TaskName))
-  $Sections = [Security.AccessControl.AccessControlSections]::Owner -bor
-    [Security.AccessControl.AccessControlSections]::Group -bor
-    [Security.AccessControl.AccessControlSections]::Access
-  if ($ActualDescriptor.GetSddlForm($Sections) -ne $ExpectedDescriptor.GetSddlForm($Sections)) {
+  if (-not (Test-SameControlCenterTaskSddl ([string]$TaskSnapshot.Sddl) (Get-ControlCenterTaskSddl $TaskName))) {
     throw "The prior tray task security descriptor did not survive restoration."
   }
   if ($TaskSnapshot.WasRunning) {
@@ -642,14 +637,48 @@ function Test-SameControlCenterTaskAction(
   }
 }
 
+function Get-ControlCenterAceFingerprint($Ace) {
+  if ($Ace -is [Security.AccessControl.CommonAce]) {
+    $sid = if ($null -ne $Ace.SecurityIdentifier) { $Ace.SecurityIdentifier.Value } else { "" }
+    return ("common|type={0}|qual={1}|flags={2}|mask={3}|sid={4}" -f [int]$Ace.AceType, [int]$Ace.AceQualifier, [int]$Ace.AceFlags, $Ace.AccessMask, $sid)
+  }
+  if ($Ace -is [Security.AccessControl.ObjectAce]) {
+    $sid = if ($null -ne $Ace.SecurityIdentifier) { $Ace.SecurityIdentifier.Value } else { "" }
+    $objectType = try { $Ace.ObjectAceType.ToString() } catch { "" }
+    $inheritedType = try { $Ace.InheritedObjectAceType.ToString() } catch { "" }
+    $objectFlags = try { [int]$Ace.ObjectAceFlags } catch { 0 }
+    return ("object|type={0}|flags={1}|mask={2}|sid={3}|obj={4}|inh={5}|objflags={6}" -f [int]$Ace.AceType, [int]$Ace.AceFlags, $Ace.AccessMask, $sid, $objectType, $inheritedType, $objectFlags)
+  }
+  $bytes = New-Object byte[] $Ace.BinaryLength
+  $Ace.GetBinaryForm($bytes, 0)
+  return ("raw|type={0}|flags={1}|bin={2}" -f [int]$Ace.AceType, [int]$Ace.AceFlags, [BitConverter]::ToString($bytes))
+}
+
 function Test-SameControlCenterTaskSddl([string]$Left, [string]$Right) {
   try {
     $LeftDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Left)
     $RightDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Right)
-    $Sections = [Security.AccessControl.AccessControlSections]::Owner -bor
-      [Security.AccessControl.AccessControlSections]::Group -bor
-      [Security.AccessControl.AccessControlSections]::Access
-    return $LeftDescriptor.GetSddlForm($Sections) -eq $RightDescriptor.GetSddlForm($Sections)
+    $LeftOwner = if ($null -ne $LeftDescriptor.Owner) { $LeftDescriptor.Owner.Value } else { "" }
+    $RightOwner = if ($null -ne $RightDescriptor.Owner) { $RightDescriptor.Owner.Value } else { "" }
+    if (-not [string]::Equals($LeftOwner, $RightOwner, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $LeftGroup = if ($null -ne $LeftDescriptor.Group) { $LeftDescriptor.Group.Value } else { "" }
+    $RightGroup = if ($null -ne $RightDescriptor.Group) { $RightDescriptor.Group.Value } else { "" }
+    if (-not [string]::Equals($LeftGroup, $RightGroup, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $leftFlags = [int]$LeftDescriptor.ControlFlags
+    $rightFlags = [int]$RightDescriptor.ControlFlags
+    if ((($leftFlags -band 4096) -ne 0) -ne (($rightFlags -band 4096) -ne 0)) { return $false }
+    if ((($leftFlags -band 4) -ne 0) -ne (($rightFlags -band 4) -ne 0)) { return $false }
+    $leftDacl = $LeftDescriptor.DiscretionaryAcl
+    $rightDacl = $RightDescriptor.DiscretionaryAcl
+    if (($null -eq $leftDacl) -ne ($null -eq $rightDacl)) { return $false }
+    if ($null -eq $leftDacl) { return $true }
+    if ($leftDacl.Count -ne $rightDacl.Count) { return $false }
+    $leftKeys = @($leftDacl | ForEach-Object { Get-ControlCenterAceFingerprint $_ } | Sort-Object)
+    $rightKeys = @($rightDacl | ForEach-Object { Get-ControlCenterAceFingerprint $_ } | Sort-Object)
+    for ($i = 0; $i -lt $leftKeys.Count; $i++) {
+      if (-not [string]::Equals($leftKeys[$i], $rightKeys[$i], [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    }
+    return $true
   } catch {
     return $false
   }
