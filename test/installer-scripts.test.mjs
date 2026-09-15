@@ -481,10 +481,10 @@ test(
       const result = spawnSync("sh", ["-s"], {
         cwd: fixture,
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH || ""}` },
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH || ""}` },
         input: `${posixVenvHelper()}\nensure_uv_venv\n`,
       });
-      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.status, 0, result.stderr || result.error?.message);
       assert.equal(readFileSync(calls, "utf8"), "venv --clear --python 3.12 .venv\n");
     } finally {
       rmSync(fixture, { recursive: true, force: true });
