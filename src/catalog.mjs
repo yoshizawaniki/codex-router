@@ -661,8 +661,10 @@ export function routedModel(template, model, behaviorTemplate = template) {
     priority: model.priority,
     visibility: "list",
     supported_in_api: true,
-    default_reasoning_level: model.defaultEffort,
-    supported_reasoning_levels: model.reasoningLevels,
+    default_reasoning_level: model.defaultEffort || "medium",
+    supported_reasoning_levels: Array.isArray(model.reasoningLevels)
+      ? model.reasoningLevels
+      : [],
     context_window: model.contextWindow,
     max_context_window: model.contextWindow,
     effective_context_window_percent: 95,

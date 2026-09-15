@@ -47,7 +47,10 @@ function assertLauncherOwnership() {
 }
 
 export function claudeCodeProbe({ environment = process.env } = {}) {
-  const command = environment.CLAUDE_CODE_BIN || commandOnPath(process.platform === "win32" ? "claude.cmd" : "claude");
+  const command = environment.CLAUDE_CODE_BIN ||
+    (process.platform === "win32"
+      ? (commandOnPath("claude.cmd") || commandOnPath("claude.exe") || commandOnPath("claude"))
+      : commandOnPath("claude"));
   if (!command) return { available: false, command: "claude", version: null };
   const spawnable = spawnableCommand(command, ["--version"]);
   const result = spawnSync(spawnable.command, spawnable.args, {

@@ -1,5 +1,5 @@
 import http from "node:http";
-import { usesNativeChatReasoning } from "./chat-reasoning.mjs";
+import { isConsoleGoDeepSeekThinking, usesNativeChatReasoning } from "./chat-reasoning.mjs";
 import {
   deepSeekResponsesEffort,
   deepSeekResponsesInput,
@@ -288,6 +288,23 @@ function restoreNativeReasoningContent(messages) {
       restored.reasoning_content = reasoning.join("\n");
     }
     return restored;
+  });
+}
+
+const CONSOLE_GO_REASONING_PLACEHOLDER = "(earlier reasoning omitted)";
+
+function backfillConsoleGoReasoningContent(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((message) => {
+    if (
+      message?.role !== "assistant" ||
+      !Array.isArray(message.tool_calls) ||
+      message.tool_calls.length === 0 ||
+      (typeof message.reasoning_content === "string" && message.reasoning_content)
+    ) {
+      return message;
+    }
+    return { ...message, reasoning_content: CONSOLE_GO_REASONING_PLACEHOLDER };
   });
 }
 
@@ -853,6 +870,12 @@ function normalizeBody(buffer, contentType, route) {
     if (usesNativeChatReasoning(model)) {
       payload.messages = restoreNativeReasoningContent(payload.messages);
     }
+    if (isConsoleGoDeepSeekThinking(model)) {
+      payload.messages = backfillConsoleGoReasoningContent(payload.messages);
+    }
+  }
+  if (isConsoleGoDeepSeekThinking(model)) {
+    delete payload.reasoning_effort;
   }
   if (provider.authProfile === "github-copilot") {
     // This is native ChatGPT account metadata, not an upstream scheduling

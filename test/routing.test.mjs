@@ -6221,6 +6221,72 @@ test("API forwarder routes GLM coding-plan models with thinking enabled", async 
   }
 }));
 
+test("API forwarder echoes Console Go DeepSeek reasoning without reasoning_effort", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-deepseek-v4-1-flash",
+          reasoning_effort: "high",
+          messages: [
+            { role: "user", content: "first" },
+            {
+              role: "assistant",
+              content: [
+                { type: "thinking", text: "reason one" },
+                { type: "thinking", text: "reason two" },
+                { type: "text", text: "visible answer" },
+              ],
+              tool_calls: [{
+                id: "call_1",
+                type: "function",
+                function: { name: "probe", arguments: "{}" },
+              }],
+            },
+            { role: "tool", tool_call_id: "call_1", content: "result" },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200, await response.text());
+    const request = upstreamRequests[0].body;
+    const assistant = request.messages.find((message) => message.role === "assistant");
+    assert.equal(assistant.reasoning_content, "reason one\nreason two");
+    assert.equal(request.reasoning_effort, undefined);
+    assert.deepEqual(assistant.content, [{ type: "text", text: "visible answer" }]);
+    assert.equal(upstreamRequests[0].url, "/v1/chat/completions");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder preserves Z.ai cached-token telemetry before the LiteLLM bridge", async () => {
   const upstream = await mockServer(async (request, response) => {
     await bodyJson(request);
@@ -10466,7 +10532,7 @@ test("router normalizes direct DeepSeek's live reasoning bridge and removes its 
   }
 });
 
-test("router compacts translated OpenCode routes and pins subagents on both route types", async () => {
+test("router compacts translated OpenCode routes and defers subagents to the Codex default", async () => {
   const blank = {
     id: "msg_blank",
     type: "message",
@@ -10487,11 +10553,11 @@ test("router compacts translated OpenCode routes and pins subagents on both rout
     arguments: "{}",
     status: "completed",
   };
-  const restoredTool = (model) => ({
+  const restoredTool = () => ({
     ...tool,
     name: "spawn_agent",
     namespace: "collaboration",
-    arguments: JSON.stringify({ model }),
+    arguments: "{}",
   });
   const tools = [{
     type: "namespace",
@@ -10578,7 +10644,7 @@ test("router compacts translated OpenCode routes and pins subagents on both rout
     );
     assert.deepEqual(
       translatedEvents.find((event) => event.type === "response.completed").response.output,
-      [restoredTool("opencode-go/deepseek-v4-flash")],
+      [restoredTool()],
     );
 
     const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
@@ -10604,7 +10670,7 @@ test("router compacts translated OpenCode routes and pins subagents on both rout
     assert.deepEqual(
       nativeEvents.find((event) => event.type === "response.completed").response.output,
       // The kept blank message precedes a tool call, so it is labelled commentary.
-      [{ ...terminalBlank, phase: "commentary" }, restoredTool("opencode-go-responses/gpt-5.6-luna")],
+      [{ ...terminalBlank, phase: "commentary" }, restoredTool()],
     );
   } finally {
     await stopChild(router);

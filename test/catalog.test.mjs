@@ -335,6 +335,15 @@ test("ClinePass routed models omit the unsupported reasoning-effort selector", (
   assert.deepEqual(normal.supported_reasoning_levels, grok.reasoningLevels);
 });
 
+test("routed models publish an empty effort selector when reasoning metadata is absent", () => {
+  const noEffort = { ...grok };
+  delete noEffort.defaultEffort;
+  delete noEffort.reasoningLevels;
+  const routed = routedModel(template, noEffort);
+  assert.equal(routed.default_reasoning_level, "medium");
+  assert.deepEqual(routed.supported_reasoning_levels, []);
+});
+
 test("current Codex search contract distinguishes supported and unsupported routed models", () => {
   // The managed provider opts in globally, while this catalog field is the
   // second, per-model gate Codex requires before it exposes standalone search.

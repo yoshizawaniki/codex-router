@@ -70,6 +70,55 @@ const PLAIN_TOOL_NAMES = new WeakMap();
 // request-local and garbage-collectable rather than guessing from the name.
 const SPECIAL_FUNCTION_REFERENCES = new WeakSet();
 
+// Some Codex Desktop builds flatten namespace definitions before sending a
+// custom-provider request and omit turn metadata. Remember exact identities
+// from namespace definitions observed on earlier requests so a later flat
+// declaration can be restored without parsing delimiter-containing names.
+// Collisions are permanently ambiguous for this registry instance and fail
+// closed.
+export class NamespaceIdentityRegistry {
+  #byWireName = new Map();
+  #maxEntries;
+
+  constructor({ maxEntries = 4096 } = {}) {
+    this.#maxEntries = Number.isInteger(maxEntries) && maxEntries > 0 ? maxEntries : 4096;
+  }
+
+  observe(tools) {
+    if (!Array.isArray(tools)) return;
+    for (const tool of tools) {
+      if (tool?.type !== "namespace" || typeof tool.name !== "string" ||
+          !tool.name || !Array.isArray(tool.tools)) continue;
+      for (const child of tool.tools) {
+        if (typeof child?.name !== "string" || !child.name) continue;
+        this.remember(`${tool.name}${NAMESPACE_DELIMITER}${child.name}`, {
+          namespace: tool.name,
+          name: child.name,
+        });
+      }
+    }
+  }
+
+  remember(wireName, native) {
+    if (typeof wireName !== "string" || !wireName ||
+        typeof native?.namespace !== "string" || !native.namespace ||
+        typeof native?.name !== "string" || !native.name) return;
+    if (!this.#byWireName.has(wireName)) {
+      if (this.#byWireName.size < this.#maxEntries) this.#byWireName.set(wireName, { ...native });
+      return;
+    }
+    const previous = this.#byWireName.get(wireName);
+    if (!previous || previous.namespace !== native.namespace || previous.name !== native.name) {
+      this.#byWireName.set(wireName, undefined);
+    }
+  }
+
+  get(wireName) {
+    const native = this.#byWireName.get(wireName);
+    return native ? { ...native } : undefined;
+  }
+}
+
 const TOOL_SEARCH_FUNCTION_NAME = "tool_search";
 const CUSTOM_TOOL_INPUT_PROPERTY = "input";
 
@@ -289,7 +338,7 @@ export function bridgeCustomTools(
   namespaces,
   toolChoice,
   names = ["apply_patch"],
-  { maxNameLength, bridgeAll = false, codecs } = {},
+  { maxNameLength, bridgeAll = false, codecs, strictFunctions = false } = {},
 ) {
   if (!(namespaces instanceof Map)) {
     return { tools, input, toolChoice, bridged: false };
@@ -399,6 +448,7 @@ export function bridgeCustomTools(
           type: "function",
           name: providerName,
           ...(description ? { description } : {}),
+          ...(strictFunctions ? { strict: true } : {}),
           parameters: codec?.parameters ?? {
             type: "object",
             properties: {
@@ -625,9 +675,10 @@ function isSubagentSpawnCall(item) {
 // `model` is the routed session's model (route.slug). Returns a rewritten item
 // only when the call carries no model of its own; otherwise returns the item
 // untouched.
-export function injectSessionModelForSpawnCalls(item, model) {
+export function normalizeModelForSpawnCalls(item, model) {
   if (!isSpawnModelCall(item)) return item;
   if (typeof model !== "string" || !model) return item;
+  if (isSubagentSpawnCall(item)) return item;
   if (typeof item.arguments !== "string") return item;
   if (!jsonArgumentsAreUnambiguous(item.arguments, { allowEmpty: true })) return item;
   let args;
@@ -637,9 +688,26 @@ export function injectSessionModelForSpawnCalls(item, model) {
     return item;
   }
   if (typeof args !== "object" || args === null || Array.isArray(args)) return item;
-  if (args.model !== undefined && !isSubagentSpawnCall(item)) return item;
+  if (args.model !== undefined) return item;
   if (args.target?.type === "chatgptWorkCloud") return item;
   if (typeof args.model === "string" && args.model) return item;
+  return { ...item, arguments: JSON.stringify({ ...args, model }) };
+}
+
+// Compatibility export for older local callers/tests. New routing code uses
+// normalizeModelForSpawnCalls; this legacy entry retains the former pinning
+// behavior for callers that explicitly request it.
+export function injectSessionModelForSpawnCalls(item, model) {
+  if (!isSpawnModelCall(item)) return item;
+  if (typeof model !== "string" || !model) return item;
+  if (typeof item.arguments !== "string" ||
+      !jsonArgumentsAreUnambiguous(item.arguments, { allowEmpty: true })) return item;
+  let args;
+  try { args = JSON.parse(item.arguments); } catch { return item; }
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return item;
+  if (args.target?.type === "chatgptWorkCloud") return item;
+  if (args.model !== undefined && !isSubagentSpawnCall(item)) return item;
+  if (typeof args.model === "string" && args.model === model) return item;
   return { ...item, arguments: JSON.stringify({ ...args, model }) };
 }
 
@@ -1029,13 +1097,20 @@ export function repairToolSchemaRoots(tools, options) {
 // OpenCode currently accepts search_content_types only on the legacy
 // web_search_preview shape. Codex sends the field on web_search, so remove only
 // that unsupported extension and preserve every other search-tool option.
-export function stripSearchContentTypes(tools) {
+export function stripUnsupportedOpenCodeSearchFields(tools) {
   if (!Array.isArray(tools)) return tools;
   let changed = false;
   const stripped = tools.map((tool) => {
-    if (tool?.type !== "web_search" || !("search_content_types" in tool)) return tool;
+    if (
+      tool?.type !== "web_search" ||
+      (!("search_content_types" in tool) && !("indexed_web_access" in tool))
+    ) return tool;
     changed = true;
-    const { search_content_types: _unsupported, ...rest } = tool;
+    const {
+      search_content_types: _unsupportedContentTypes,
+      indexed_web_access: _unsupportedIndexedAccess,
+      ...rest
+    } = tool;
     return rest;
   });
   return changed ? stripped : tools;
@@ -1096,9 +1171,10 @@ function flattenNamespaceChild(namespace, fn, providerName) {
 // (name -> tool names) so callers can rename history and restore calls.
 export function flattenNamespaceTools(
   tools,
-  { bridgeToolSearch = true, maxNameLength, aliasCollisions = false } = {},
+  { bridgeToolSearch = true, maxNameLength, aliasCollisions = false, identityRegistry } = {},
 ) {
   if (!Array.isArray(tools)) return { tools, flattened: false, namespaces: new Map() };
+  identityRegistry?.observe?.(tools);
   const flattened = [];
   const namespaces = new Map();
   const plainToolNames = new Set();
@@ -1317,6 +1393,42 @@ export function restorePreflattenedToolNamespaces(tools, clientMetadata) {
     }
   }
   return restored;
+}
+
+export const stripSearchContentTypes = stripUnsupportedOpenCodeSearchFields;
+
+export function hasTurnNamespaceInventory(clientMetadata) {
+  const encoded = clientMetadata?.["x-codex-turn-metadata"];
+  if (typeof encoded !== "string") return false;
+  if (!jsonIsUnambiguousForRewrite(encoded, { allowLossyNumbers: true })) return true;
+  try {
+    return Object.hasOwn(JSON.parse(encoded) || {}, "tool_namespaces_info");
+  } catch {
+    return true;
+  }
+}
+
+// Metadata remains authoritative. When it is absent, recover only exact
+// provider names previously learned from real namespace definitions. Unknown
+// and ambiguous names stay ordinary functions.
+export function recoverPreflattenedNamespaceTools(tools, namespaces, identityRegistry) {
+  if (!Array.isArray(tools) || !(namespaces instanceof Map) ||
+      !(identityRegistry instanceof NamespaceIdentityRegistry)) return false;
+  let recovered = false;
+  for (const tool of tools) {
+    if (tool?.type !== "function") continue;
+    const providerName = providerFunctionName(tool);
+    const native = identityRegistry.get(providerName);
+    if (!native || namespaces.get(native.namespace)?.has(native.name)) continue;
+    let names = namespaces.get(native.namespace);
+    if (!names) {
+      names = new Set();
+      namespaces.set(native.namespace, names);
+    }
+    names.add(native.name);
+    recovered = true;
+  }
+  return recovered;
 }
 
 function plainObject(value) {
@@ -2357,7 +2469,7 @@ function rewriteNamespaceFunctionCallItem(
   // exact plain identity, not the app namespace. Do not infer app semantics
   // from the restored spelling after the lookup has already proved otherwise.
   if (!exactPlainProviderIdentity) {
-    rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
+    rewritten = normalizeModelForSpawnCalls(rewritten, sessionModel);
   }
   rewritten = rewriteFunctionCallArguments(rewritten);
   return rewritten === item ? undefined : rewritten;
@@ -3483,17 +3595,33 @@ export class NamespaceToolCallTransform extends Transform {
   }
 
   #outputItemMatchesState(sourceItem, item, state) {
+    const outputIdentityMatches =
+      item?.type === state.outputType &&
+      item?.name === state.outputName &&
+      item?.namespace === state.outputNamespace;
+    const sourceIdentityMatches =
+      sourceItem?.type === state.sourceType &&
+      (
+        (
+          sourceItem?.name === state.sourceName &&
+          sourceItem?.namespace === state.sourceNamespace
+        ) ||
+        // OpenCode Responses can open a function call with the unique bare
+        // spelling (`spawn_agent`) and close the same stable ids with the
+        // flattened spelling (`collaboration__spawn_agent`). Both resolve to
+        // the exact same request-local native identity. For ordinary calls,
+        // accept that provider-side alias change only when the rewritten
+        // output identity remains byte-for-byte stable. Special relays retain
+        // their stricter source identity contract.
+        (!state.kind && outputIdentityMatches)
+      );
     return (
       sourceItem?.id === state.itemId &&
       sourceItem?.call_id === state.callId &&
-      sourceItem?.type === state.sourceType &&
-      sourceItem?.name === state.sourceName &&
-      sourceItem?.namespace === state.sourceNamespace &&
+      sourceIdentityMatches &&
       item?.id === state.itemId &&
       item?.call_id === state.callId &&
-      item?.type === state.outputType &&
-      item?.name === state.outputName &&
-      item?.namespace === state.outputNamespace
+      outputIdentityMatches
     );
   }
 

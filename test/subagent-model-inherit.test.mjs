@@ -6,6 +6,7 @@ import {
   buildNamespaceLookups,
   flattenNamespaceTools,
   injectSessionModelForSpawnCalls,
+  normalizeModelForSpawnCalls,
   rewriteNamespaceResponsePayload,
 } from "../src/namespace-relay.mjs";
 
@@ -21,6 +22,13 @@ function spawnCall(name, namespace, argumentsText) {
   if (namespace !== undefined) item.namespace = namespace;
   return item;
 }
+
+test("normalizeModelForSpawnCalls leaves omitted and explicit spawn_agent unchanged", () => {
+  const omitted = spawnCall("collaboration__spawn_agent", undefined, JSON.stringify({ message: "inspect" }));
+  const explicit = spawnCall("collaboration__spawn_agent", undefined, JSON.stringify({ message: "inspect", model: "gpt-6-astra" }));
+  assert.equal(normalizeModelForSpawnCalls(omitted, SESSION_MODEL), omitted);
+  assert.equal(normalizeModelForSpawnCalls(explicit, SESSION_MODEL), explicit);
+});
 
 test("local thread and subagent spawns are eligible for routed model inheritance", () => {
   assert.deepEqual([...SPAWN_MODEL_TOOLS], ["create_thread", "spawn_agent"]);
@@ -110,7 +118,7 @@ test("an explicit subagent model is kept instead of pinned to the routed parent"
       JSON.stringify({ task_name: "review", message: "inspect", model: "gpt-5.6-sol" }),
     ),
   ]) {
-    assert.equal(injectSessionModelForSpawnCalls(subagent, SESSION_MODEL), subagent);
+    assert.equal(normalizeModelForSpawnCalls(subagent, SESSION_MODEL), subagent);
   }
 });
 
@@ -257,7 +265,7 @@ test("the client's advertised enum reaches the wire rewrite and is preserved", (
   assert.equal(JSON.parse(item.arguments).model, "gpt-6-astra");
 });
 
-test("a wire model outside the advertised enum is still pinned to the parent", () => {
+test("a wire model outside the advertised enum is removed without inventing a replacement", () => {
   const { namespaces } = flattenNamespaceTools(
     routedCollaborationTools(["gpt-6-astra", "gpt-5.6-sol"]),
   );
@@ -272,5 +280,5 @@ test("a wire model outside the advertised enum is still pinned to the parent", (
   );
   const item = rewritten.output[0];
   assert.equal(item.name, "spawn_agent");
-  assert.equal(JSON.parse(item.arguments).model, SESSION_MODEL);
+  assert.equal(JSON.parse(item.arguments).model, undefined);
 });

@@ -407,3 +407,14 @@ test("a non-Command Code chat provider keeps the unbounded 80-character name", (
     "only Command Code opts into the 64-character bound",
   );
 });
+
+test("tokenrouter bounds provider-facing namespace names to 64 characters", () => {
+  const routed = chatProviderToolSurface([{
+    type: "namespace",
+    name: "mcp__long",
+    tools: [{ type: "function", name: "x".repeat(120) }],
+  }], "tokenrouter");
+  const longAlias = routed.tools.find((tool) => tool.name.startsWith("mcp__long__"));
+  assert.ok(longAlias);
+  assert.ok(routed.tools.every((tool) => tool.name.length <= 64));
+});

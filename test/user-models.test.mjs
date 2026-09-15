@@ -163,6 +163,16 @@ test("registry merges valid user models and skips collisions", async () => {
       priority: 100,
       metadata: { availabilityNux: "Now available through your DeepSeek key." },
     }),
+    (() => {
+      const entry = userModelEntry({
+        providerId: "deepseek",
+        upstreamId: "deepseek-no-effort-selector",
+        priority: 121,
+      });
+      delete entry.defaultEffort;
+      delete entry.reasoningLevels;
+      return entry;
+    })(),
     // Collides with a built-in slug and must be skipped, not fatal.
     { ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-v4-pro", priority: 101 }) },
     // The old OpenCode curation slug differs from the checked-in public slug,
@@ -299,6 +309,11 @@ test("registry merges valid user models and skips collisions", async () => {
   const registry = await import("../src/model-registry.mjs");
   const slugs = registry.MODELS.map((model) => model.slug);
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
+  assert.ok(slugs.includes("deepseek/deepseek-no-effort-selector"));
+  assert.equal(
+    registry.MODEL_BY_SLUG.get("deepseek/deepseek-no-effort-selector").defaultEffort,
+    undefined,
+  );
   assert.equal(slugs.includes("openrouter/vendor/embedding-only-listed"), false);
   assert.equal(slugs.includes("openrouter/vendor/embedding-only"), true);
   assert.equal(slugs.includes("openrouter/vendor/bad-endpoint"), false);

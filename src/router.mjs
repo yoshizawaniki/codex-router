@@ -144,6 +144,7 @@ import {
 import { GROK_PATCH_HOOK_CODEC, grokPatchHookEnabled } from "./grok-patch-hook-transport.mjs";
 import { CODEX_PATCH_HOOK_BASE_PATH, codexPatchHookEndpoint } from "./codex-patch-hook-endpoint.mjs";
 import {
+  NamespaceIdentityRegistry,
   NamespaceToolCallTransform,
   agentMessagesAsUserMessages,
   bridgeCustomTools,
@@ -152,10 +153,13 @@ import {
   flattenNamespaceTools,
   flattenToolChoice,
   flattenToolSearchHistory,
+  hasTurnNamespaceInventory,
+  recoverPreflattenedNamespaceTools,
   restorePreflattenedToolNamespaces,
   repairToolSchemaRoots,
   strictOpenCodeCompactionInput,
-  stripSearchContentTypes,
+  normalizeModelForSpawnCalls,
+  stripUnsupportedOpenCodeSearchFields,
   ToolSearchHistoryCapacityError,
 } from "./namespace-relay.mjs";
 import {
@@ -165,6 +169,8 @@ import {
   GROQ_TOOL_LIMIT_CODE,
 } from "./chat-tool-surface.mjs";
 import { collaborationToolAvailable, pendingInterruptTargets } from "./subagent-completion.mjs";
+
+const namespaceIdentityRegistry = new NamespaceIdentityRegistry();
 import {
   FAILOVER_BUDGET_MS,
   MAX_FAILOVER_HOPS,
@@ -1061,7 +1067,8 @@ function needsNonRecursiveToolSchemaCompatibility(route) {
     NON_RECURSIVE_SCHEMA_PROVIDER_IDS.has(providerId) ||
     needsZenFreeToolCompatibility(route) ||
     (providerId === "opencode-go-responses" &&
-      route.upstreamModel === "muse-spark-1.2-contributor")
+      (route.upstreamModel === "muse-spark-1.2-contributor" ||
+        route.upstreamModel === "muse-spark-1.3-contributor"))
   );
 }
 
@@ -1079,6 +1086,13 @@ function needsMoonshotSchemaCompatibility(route) {
 function zenFreeCompatibleInput(input, route) {
   if (!needsZenFreeToolCompatibility(route)) return input;
   return downgradeOriginalImageDetail(agentMessagesAsUserMessages(input));
+}
+
+function publicResponsesCompatibleInput(input, route) {
+  const compatible = zenFreeCompatibleInput(input, route);
+  return needsConsoleGoResponsesToolCompatibility(route)
+    ? agentMessagesAsUserMessages(compatible)
+    : compatible;
 }
 
 function nativeTarget(pathname, search = "") {
@@ -2721,7 +2735,7 @@ async function summarizeWith(
   signal,
   { searchContract } = {},
 ) {
-  const compatibleInput = zenFreeCompatibleInput(
+  const compatibleInput = publicResponsesCompatibleInput(
     normalizeProviderAppToolOutputs(aged.input),
     route,
   );
@@ -3228,7 +3242,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   const clientTools = chatCompletionsProvider || deepSeekResponses || consoleGoResponsesCompatibility
     ? restorePreflattenedToolNamespaces(payload.tools, payload.client_metadata)
     : payload.tools;
-  const compatibleInput = zenFreeCompatibleInput(
+  const compatibleInput = publicResponsesCompatibleInput(
     normalizeProviderAppToolOutputs(agedInput),
     route,
   );
@@ -3240,6 +3254,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     const preflight = chatProviderToolSurface(clientTools, provider.id, {
       input: compatibleInput,
       toolChoice: payload.tool_choice,
+      identityRegistry: namespaceIdentityRegistry,
     });
     try {
       flattenToolSearchHistory(
@@ -3331,6 +3346,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     const flattened = chatProviderToolSurface(tools, provider?.id, {
       input,
       toolChoice: payload.tool_choice,
+      identityRegistry: namespaceIdentityRegistry,
     });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;
@@ -3341,7 +3357,10 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     // Console Go exposes a Responses endpoint but rejects the native tool
     // discriminators Codex sends. Translate only its tool boundary; unlike the
     // chat-completions branch, do not inject the deferred codex_app snapshot.
-    const flattened = flattenNamespaceTools(tools, { maxNameLength: 64 });
+    const flattened = flattenNamespaceTools(tools, {
+      maxNameLength: 64,
+      identityRegistry: namespaceIdentityRegistry,
+    });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;
     tools = flattened.tools;
@@ -3357,12 +3376,21 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     const inventoryTools = restorePreflattenedToolNamespaces(tools, payload.client_metadata);
     flattenedNamespaces = flattenNamespaceTools(inventoryTools, {
       bridgeToolSearch: false,
+      identityRegistry: namespaceIdentityRegistry,
     }).namespaces;
-    namespacesFlattened = inventoryTools !== tools;
+    const definitionRecovered = !hasTurnNamespaceInventory(payload.client_metadata) &&
+      recoverPreflattenedNamespaceTools(inventoryTools, flattenedNamespaces, namespaceIdentityRegistry);
+    namespacesFlattened = inventoryTools !== tools || definitionRecovered;
     // Keeping the namespace shape is not the same as keeping a parameter root
     // strict Responses providers may reject. Run the shared root repair on the
     // tools alone without flattening their native representation.
     tools = repairToolSchemaRoots(tools);
+  }
+  // If Desktop omitted the turn inventory, use only identities learned from
+  // observed namespace definitions; metadata recovery above remains first.
+  if (!hasTurnNamespaceInventory(payload.client_metadata) &&
+      recoverPreflattenedNamespaceTools(tools, flattenedNamespaces, namespaceIdentityRegistry)) {
+    namespacesFlattened = true;
   }
   if (needsNonRecursiveToolSchemaCompatibility(route)) {
     // Run after namespace flattening so both native children and ordinary
@@ -3370,7 +3398,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     tools = repairToolSchemaRoots(tools, { nonRecursive: true });
   }
   if (needsStrictOpenCodeToolCompatibility(route)) {
-    tools = stripSearchContentTypes(tools);
+    tools = stripUnsupportedOpenCodeSearchFields(tools);
   }
   if (needsMoonshotSchemaCompatibility(route)) {
     // After the namespace flattening above, so the connector tools Codex ships
@@ -3398,7 +3426,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
         : structuredPatch
         ? { codecs: new Map([["apply_patch", GROK_STRUCTURED_PATCH_CODEC]]) }
         : consoleGoResponsesCompatibility
-        ? { maxNameLength: 64, bridgeAll: true }
+        ? { maxNameLength: 64, bridgeAll: true, strictFunctions: true }
         : undefined,
     );
     tools = customTools.tools;
@@ -4179,6 +4207,7 @@ async function handleResponses(request, response, requestUrl) {
       // and queue missing interrupt_agent closes the same way as routed turns.
       flattenedNamespaces = flattenNamespaceTools(payload.tools, {
         bridgeToolSearch: false,
+        identityRegistry: namespaceIdentityRegistry,
       }).namespaces;
       pendingInterrupts = pendingInterruptTargets(native.input ?? payload.input, {
         namespaces: flattenedNamespaces,
@@ -4463,9 +4492,9 @@ async function handleResponses(request, response, requestUrl) {
         ? leakedToolCallRecoveryTransform(contentType)
         : undefined;
       if (leakedToolCalls) transforms.push(leakedToolCalls);
-      // Restore flattened namespace calls for routed chat-completions providers
-      // and pin an omitted spawn_agent model to every routed parent, including
-      // providers that already speak Responses. Also inject missing finished-
+      // Restore flattened namespace calls for routed chat-completions providers.
+      // spawn_agent omission remains omission so Codex applies its configured
+      // default; explicit child model choices are preserved. Also inject missing finished-
       // child interrupts for both routed and native multi-agent parents (San
       // Francisco uses native GPT).
       if (route || pendingInterrupts.length > 0) {

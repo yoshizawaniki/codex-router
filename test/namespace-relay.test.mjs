@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import test from "node:test";
 
 import {
+  NamespaceIdentityRegistry,
   NamespaceToolCallTransform,
   agentMessagesAsUserMessages,
   bridgeCustomTools,
@@ -14,11 +15,14 @@ import {
   flattenNamespaceTools,
   flattenToolChoice,
   flattenToolSearchHistory,
+  hasTurnNamespaceInventory,
+  recoverPreflattenedNamespaceTools,
   restorePreflattenedToolNamespaces,
   rewriteNamespaceFunctionCall,
   rewriteNamespaceResponsePayload,
   repairToolSchemaRoots,
   stripSearchContentTypes,
+  stripUnsupportedOpenCodeSearchFields,
   ToolSearchHistoryCapacityError,
 } from "../src/namespace-relay.mjs";
 import { CODEX_APP_TOOLS, mergeCodexAppTools } from "../src/codex-app-tools.mjs";
@@ -42,6 +46,36 @@ function collect(stream) {
     stream.on("error", reject);
   });
 }
+
+test("metadata-free namespace fallback uses exact learned identities and fails closed", () => {
+  const registry = new NamespaceIdentityRegistry();
+  const namespace = "mcp__server__with__delimiter";
+  const name = "tool__with__delimiter";
+  flattenNamespaceTools([{
+    type: "namespace",
+    name: namespace,
+    tools: [{ type: "function", name }],
+  }], { identityRegistry: registry });
+  const wireName = `${namespace}__${name}`;
+  const tools = [{ type: "function", name: wireName }];
+  const flattened = flattenNamespaceTools(tools);
+  assert.equal(hasTurnNamespaceInventory(undefined), false);
+  assert.equal(recoverPreflattenedNamespaceTools(tools, flattened.namespaces, registry), true);
+  assert.deepEqual(buildNamespaceLookups(flattened.namespaces).flatToNative.get(wireName), {
+    namespace,
+    name,
+  });
+
+  const ambiguous = new NamespaceIdentityRegistry();
+  flattenNamespaceTools([
+    { type: "namespace", name: "mcp__calendar", tools: [{ type: "function", name: "admin__create" }] },
+    { type: "namespace", name: "mcp__calendar__admin", tools: [{ type: "function", name: "create" }] },
+  ], { identityRegistry: ambiguous });
+  const unknown = [{ type: "function", name: "mcp__calendar__admin__create" }];
+  const untouched = flattenNamespaceTools(unknown);
+  assert.equal(recoverPreflattenedNamespaceTools(unknown, untouched.namespaces, ambiguous), false);
+  assert.equal(untouched.namespaces.size, 0);
+});
 
 function collectBuffer(stream) {
   return new Promise((resolve, reject) => {
@@ -2313,7 +2347,7 @@ test("response transform restores namespace on unambiguous unprefixed calls", as
   assert.match(output, /"namespace":"codex_app"/);
 });
 
-test("response transform pins only an unadvertised spawn-agent override to the routed parent", async () => {
+test("response transform preserves only advertised spawn-agent overrides", async () => {
   const { namespaces } = flattenNamespaceTools(clientRoutedTools());
   const lookups = buildNamespaceLookups(namespaces);
   const invalid = rewriteNamespaceResponsePayload(
@@ -2362,7 +2396,6 @@ test("response transform pins only an unadvertised spawn-agent override to the r
   );
   assert.deepEqual(JSON.parse(inherited.output[0].arguments), {
     message: "verify",
-    model: "opencode-go/deepseek-v4-flash",
   });
 
   // The client advertised this model, so it is a deliberate delegation target
@@ -2386,7 +2419,7 @@ test("response transform pins only an unadvertised spawn-agent override to the r
   });
 });
 
-test("stream response keeps an omitted spawn-agent model on its routed parent", async () => {
+test("stream response leaves an omitted spawn-agent model to the Codex default", async () => {
   const { namespaces } = flattenNamespaceTools(clientRoutedTools());
   const event = {
     type: "response.output_item.done",
@@ -2410,11 +2443,67 @@ test("stream response keeps an omitted spawn-agent model on its routed parent", 
   assert.equal(payload.item.name, "spawn_agent");
   assert.deepEqual(JSON.parse(payload.item.arguments), {
     message: "verify",
-    model: "opencode-go/deepseek-v4-flash",
   });
 });
 
-test("Responses-native stream keeps an omitted spawn-agent model on its routed parent", async () => {
+test("stream accepts bare-to-flattened aliases for one stable ordinary call", async () => {
+  const { namespaces } = flattenNamespaceTools(clientRoutedTools());
+  const id = "fc_alias_change";
+  const callId = "call_alias_change";
+  const argumentsText = JSON.stringify({ message: "verify" });
+  const events = [
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "function_call",
+        name: "spawn_agent",
+        id,
+        call_id: callId,
+        arguments: "",
+      },
+    },
+    {
+      type: "response.function_call_arguments.done",
+      item_id: id,
+      call_id: callId,
+      arguments: argumentsText,
+    },
+    {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "collaboration__spawn_agent",
+        id,
+        call_id: callId,
+        arguments: argumentsText,
+      },
+    },
+  ];
+  const transform = new NamespaceToolCallTransform(
+    namespaces,
+    "text/event-stream",
+    "opencode-go-responses/muse-spark-1.3-contributor",
+  );
+  const output = await collect(
+    Readable.from(
+      events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ),
+    ).pipe(transform),
+  );
+  const payloads = output
+    .toString("utf8")
+    .split("\n\n")
+    .filter(Boolean)
+    .map((frame) => JSON.parse(frame.split("\n").find((line) => line.startsWith("data: ")).slice(6)));
+  for (const payload of [payloads[0], payloads[2]]) {
+    assert.equal(payload.item.name, "spawn_agent");
+    assert.equal(payload.item.namespace, "collaboration");
+  }
+  assert.equal(payloads[1].arguments, argumentsText);
+});
+
+test("Responses-native stream leaves an omitted spawn-agent model to the Codex default", async () => {
   const event = {
     type: "response.output_item.done",
     item: {
@@ -2438,7 +2527,6 @@ test("Responses-native stream keeps an omitted spawn-agent model on its routed p
   assert.equal(payload.item.name, "spawn_agent");
   assert.deepEqual(JSON.parse(payload.item.arguments), {
     message: "verify",
-    model: "opencode-go/deepseek-v4-flash",
   });
 });
 
@@ -3724,6 +3812,15 @@ test("OpenCode search repair strips only search_content_types on web_search", ()
   });
   assert.deepEqual(stripped[1], preview);
   assert.deepEqual(stripped[2], ordinary);
+});
+
+test("OpenCode search repair also strips indexed_web_access only", () => {
+  const ordinary = { type: "function", name: "keep" };
+  const search = { type: "web_search", search_context_size: "high", indexed_web_access: true };
+  assert.deepEqual(stripUnsupportedOpenCodeSearchFields([search, ordinary]), [
+    { type: "web_search", search_context_size: "high" },
+    ordinary,
+  ]);
 });
 
 test("OpenCode input repair preserves collaboration text and inherited images", () => {

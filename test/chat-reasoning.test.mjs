@@ -7,7 +7,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { nativeReasoningFamily, usesNativeChatReasoning } from "../src/chat-reasoning.mjs";
+import {
+  isConsoleGoDeepSeekThinking,
+  nativeReasoningFamily,
+  usesNativeChatReasoning,
+} from "../src/chat-reasoning.mjs";
 import { MODEL_BY_SLUG } from "../src/model-registry.mjs";
 import { childOutput, waitForListeners } from "./listener-readiness.mjs";
 
@@ -20,6 +24,11 @@ test("native chat reasoning stays scoped to established history contracts", () =
   assert.equal(usesNativeChatReasoning({
     provider: "commandcode", upstreamModel: "deepseek/deepseek-v4-flash",
   }), true);
+  for (const upstreamModel of ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"]) {
+    assert.equal(isConsoleGoDeepSeekThinking({ provider: "opencode-go", upstreamModel }), true);
+    assert.equal(usesNativeChatReasoning({ provider: "opencode-go", upstreamModel }), true);
+  }
+  assert.equal(isConsoleGoDeepSeekThinking({ provider: "opencode-go", upstreamModel: "deepseek-v4-flash-vision-exp" }), false);
   for (const model of [
     undefined,
     // With no `upstreamModel` this asserted nothing: String(undefined ?? "")

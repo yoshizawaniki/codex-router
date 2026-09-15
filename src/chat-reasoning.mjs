@@ -62,6 +62,23 @@ const NATIVE_REASONING_CHAT_PROVIDERS = new Set([
   "deepseek",
 ]);
 
+// Console Go rejects a replayed `reasoning_content` field when the same
+// request also carries `reasoning_effort`. The history contract is still
+// required for these DeepSeek thinking models; the forwarder drops only the
+// redundant effort parameter.
+const CONSOLE_GO_DEEPSEEK_THINKING_MODELS = new Set([
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "deepseek-v4.1-flash",
+]);
+
+export function isConsoleGoDeepSeekThinking(model) {
+  return (
+    model?.provider === "opencode-go" &&
+    CONSOLE_GO_DEEPSEEK_THINKING_MODELS.has(model?.upstreamModel)
+  );
+}
+
 export function nativeReasoningFamily(model) {
   if (!NATIVE_REASONING_CHAT_PROVIDERS.has(model?.provider)) return undefined;
   const upstream = String(model?.upstreamModel ?? "");

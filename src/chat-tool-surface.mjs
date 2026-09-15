@@ -219,32 +219,33 @@ function withRequiredAppTools(tools, required) {
 // variants front the same validator. They opt into the router's existing
 // bounded alias route, which is deterministic and reversible, so
 // `rewriteNamespaceResponsePayload()` still restores the client's own identity.
-// Every other non-Groq provider keeps the unbounded surface byte for byte.
-const BOUNDED_TOOL_NAME_PROVIDERS = new Set(["commandcode", "commandcode-messages"]);
+// TokenRouter and Command Code share the 64-character validator. Every other
+// non-Groq provider keeps the unbounded surface byte for byte.
+const BOUNDED_TOOL_NAME_PROVIDERS = new Set(["commandcode", "commandcode-messages", "tokenrouter"]);
 const BOUNDED_TOOL_NAME_LENGTH = 64;
 
 export function chatProviderToolSurface(
   tools,
   providerId,
-  { input, toolChoice } = {},
+  { input, toolChoice, identityRegistry } = {},
 ) {
   const merged = mergeCodexAppTools(tools);
   if (providerId !== "groq") {
     return flattenNamespaceTools(
       merged.tools,
       BOUNDED_TOOL_NAME_PROVIDERS.has(providerId)
-        ? { maxNameLength: BOUNDED_TOOL_NAME_LENGTH }
-        : {},
+        ? { maxNameLength: BOUNDED_TOOL_NAME_LENGTH, identityRegistry }
+        : { identityRegistry },
     );
   }
 
   // Groq has no OpenCode-style length bound, but it still needs deterministic
   // aliases when two distinct native identities have the same flattened wire
   // spelling. Keep that collision safety independent from the 64-byte route.
-  const expanded = flattenNamespaceTools(merged.tools, { aliasCollisions: true });
+  const expanded = flattenNamespaceTools(merged.tools, { aliasCollisions: true, identityRegistry });
   if (!Array.isArray(expanded.tools) || expanded.tools.length <= GROQ_MAX_TOOLS) return expanded;
 
-  const client = flattenNamespaceTools(tools, { aliasCollisions: true });
+  const client = flattenNamespaceTools(tools, { aliasCollisions: true, identityRegistry });
   const clientToolCount = Array.isArray(client.tools) ? client.tools.length : 0;
   if (!Array.isArray(client.tools) || clientToolCount > GROQ_MAX_TOOLS) {
     throw new GroqToolLimitError({
@@ -270,7 +271,7 @@ export function chatProviderToolSurface(
 
   const selected = flattenNamespaceTools(
     withRequiredAppTools(tools, requiredDefinitions),
-    { aliasCollisions: true },
+    { aliasCollisions: true, identityRegistry },
   );
   if (!Array.isArray(selected.tools) || selected.tools.length > GROQ_MAX_TOOLS) {
     throw new GroqToolLimitError({

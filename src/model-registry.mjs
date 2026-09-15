@@ -804,13 +804,15 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `duplicate gateway model ${model.gatewayModel}`;
   }
   if (model.listed) {
-    for (const field of ["displayName", "description", "defaultEffort", "compHash"]) {
+    for (const field of ["displayName", "description", "compHash"]) {
       if (typeof model[field] !== "string" || !model[field]) {
         return `listed model ${model.slug} is missing ${field}`;
       }
     }
-    if (!Array.isArray(model.reasoningLevels) || model.reasoningLevels.length === 0) {
-      return `listed model ${model.slug} requires reasoningLevels`;
+    const hasDefaultEffort = model.defaultEffort !== undefined;
+    const hasReasoningLevels = model.reasoningLevels !== undefined;
+    if (hasDefaultEffort !== hasReasoningLevels) {
+      return `listed model ${model.slug} has incomplete reasoning metadata`;
     }
     if (!Number.isInteger(model.contextWindow) || model.contextWindow < 1) {
       return `listed model ${model.slug} requires contextWindow`;
@@ -833,15 +835,21 @@ function modelProblem(model, providers, slugs, gatewayModels) {
       return `listed model ${model.slug} requires supported inputModalities`;
     }
     if (
-      model.reasoningLevels.some(
+      hasReasoningLevels && (
+        typeof model.defaultEffort !== "string" ||
+        !model.defaultEffort ||
+        !Array.isArray(model.reasoningLevels) ||
+        model.reasoningLevels.length === 0 ||
+        model.reasoningLevels.some(
         (level) =>
           !level ||
           typeof level.effort !== "string" ||
           !level.effort ||
           typeof level.description !== "string" ||
           !level.description,
-      ) ||
-      !model.reasoningLevels.some((level) => level.effort === model.defaultEffort)
+        ) ||
+        !model.reasoningLevels.some((level) => level.effort === model.defaultEffort)
+      )
     ) {
       return `listed model ${model.slug} has invalid reasoningLevels`;
     }
