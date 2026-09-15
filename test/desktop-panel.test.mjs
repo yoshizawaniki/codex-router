@@ -324,7 +324,7 @@ test("the panel renders and answers in a real browser", { skip: browserSkip }, a
   const { url, close } = await serve({ runCommand: async () => ({}) });
   const browser = await chromium.launch({ executablePath: chromiumPath });
   try {
-    const page = await browser.newPage({ viewport: { width: 420, height: 720 } });
+    const page = await browser.newPage({ locale: "en-US", viewport: { width: 420, height: 720 } });
     const failures = [];
     page.on("pageerror", (error) => failures.push(String(error.message)));
     page.on("response", (response) => {

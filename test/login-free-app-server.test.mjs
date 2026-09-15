@@ -370,7 +370,12 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
   } finally {
     for (const socket of upgradedSockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
-    rmSync(codexHome, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    // The newer CLI finishes its turn before its background SQLite handles
+    // are released on Windows. Do not treat that teardown lag as a route error.
+    if (process.platform === "win32") {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+    rmSync(codexHome, { recursive: true, force: true, maxRetries: 200, retryDelay: 100 });
   }
 }
 

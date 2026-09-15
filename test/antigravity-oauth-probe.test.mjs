@@ -13,7 +13,9 @@ const previousDiscovery = process.env.CODEX_ROUTER_NO_DISCOVERY;
 const previousTerminalGrace = process.env.ANTIGRAVITY_TERMINAL_GRACE_MS;
 process.env.CODEX_ROUTER_STATE_DIR = testRoot;
 process.env.CODEX_ROUTER_NO_DISCOVERY = "0";
-process.env.ANTIGRAVITY_TERMINAL_GRACE_MS = "25";
+// The production grace is 2 seconds. Keep a short bounded test grace without
+// making a 5 ms mock SSE timer race a loaded Windows test runner.
+process.env.ANTIGRAVITY_TERMINAL_GRACE_MS = "500";
 
 const { probeAntigravity } = await import("../src/antigravity-oauth-probe.mjs");
 const { antigravityOAuthStatus } = await import("../src/antigravity-oauth-status.mjs");

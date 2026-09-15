@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -62,9 +62,12 @@ test("an unknown subcommand exits 2 with usage", () => {
   assert.match(result.stderr, /Usage: tray-service-windows\.mjs/);
 });
 
-test("install refuses before the tray has been built", () => {
-  // The checkout under test has no compiled Tauri binary, so this exercises
-  // the real guard rather than a stub. A missing binary must name the build
+const packagedTray = path.join(root, "apps", "control-center", "release", "win-unpacked", "Codex Router.exe");
+test("install refuses before the tray has been built", {
+  skip: existsSync(packagedTray) ? "the checkout already has a packaged Control Center" : false,
+}, () => {
+  // An unbuilt checkout exercises the real guard rather than a stub. A
+  // missing binary must name the build
   // command instead of registering a task that points at nothing.
   const result = trayService("install");
   assert.notEqual(result.status, 0);
