@@ -2379,6 +2379,11 @@ every Chat Completions route (measured on `commandcode/hy4-preview` and
   pairs each call with its result, a native-only history is forwarded
   unchanged, and routed requests keep their IDs. The `native replay omits
   incompatible item IDs` case in `test/routing.test.mjs` holds both sides.
+  The custom→function bridge is the other direction: Console Go requires `fc`
+  on function-shaped items, and a rewritten `custom_tool_call_output` still
+  carried `ctco_…` (#780). `bridgeCustomTools` omits a non-`fc` string `id` on
+  the rewritten call and output; `call_id` still pairs them. A native-minted
+  `fc…` id is kept. Do not mint a substitute id.
 - Never log relay response bodies, decrypted task text, or exception messages
   that can echo either. Regressions require fragmented/mislabeled SSE tests and
   real marker-return probes through every installed routed agent plus a

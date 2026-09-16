@@ -405,6 +405,16 @@ export function bridgeCustomTools(
   }
   if (!nativeTools.size) return { tools, input, toolChoice, bridged: false };
 
+  // Console Go validates optional item ids on function-shaped history against
+  // the `fc` prefix. The rewrite used to keep `ctc_` / `ctco_` ids on the new
+  // type, which 400s every follow-up after apply_patch (#780). call_id still
+  // pairs the call with its result. A native-minted `fc…` id is kept.
+  const withoutIncompatibleFunctionItemId = (item) => {
+    if (typeof item?.id !== "string" || item.id.startsWith("fc")) return item;
+    const { id: _id, ...rest } = item;
+    return rest;
+  };
+
   const ordinaryTools = Array.isArray(tools)
     ? tools.filter((tool) => !(tool?.type === "custom" && nativeTools.has(keyOf(tool))))
     : tools;
@@ -514,12 +524,12 @@ export function bridgeCustomTools(
       const historicalArguments = item.namespace === undefined
         ? codecs?.get(item.name)?.encodeHistoryInput?.(customInput)
         : undefined;
-      const routedCall = {
+      const routedCall = withoutIncompatibleFunctionItemId({
         ...rest,
         type: "function_call",
         name: providerName,
         arguments: historicalArguments ?? JSON.stringify({ [CUSTOM_TOOL_INPUT_PROPERTY]: customInput }),
-      };
+      });
       SPECIAL_FUNCTION_REFERENCES.add(routedCall);
       return routedCall;
     }
@@ -529,7 +539,7 @@ export function bridgeCustomTools(
       bridgedCallIds.has(item.call_id)
     ) {
       changedInput = true;
-      return { ...item, type: "function_call_output" };
+      return withoutIncompatibleFunctionItemId({ ...item, type: "function_call_output" });
     }
     return item;
   });
@@ -1149,6 +1159,54 @@ export function downgradeOriginalImageDetail(input) {
     return contentChanged ? { ...item, content } : item;
   });
   return changed ? converted : input;
+}
+
+const REASONING_ENCRYPTED_INCLUDE = "reasoning.encrypted_content";
+
+function reasoningItemHasVisibleText(item) {
+  if (typeof item?.summary === "string" && item.summary) return true;
+  if (
+    Array.isArray(item?.summary) &&
+    item.summary.some((part) => typeof part?.text === "string" && part.text)
+  ) {
+    return true;
+  }
+  if (typeof item?.content === "string" && item.content) return true;
+  if (
+    Array.isArray(item?.content) &&
+    item.content.some((part) => typeof part?.text === "string" && part.text)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// OpenCode Zen's anonymous Muse Contributor Free Responses route is a Console
+// proxy. Meta issues reasoning `encrypted_content` to Console's caller, not to
+// this router. Replaying it 400s with "reasoning `encrypted_content` was not
+// issued to this caller". Drop the continuation token; keep any summary text.
+// Paid Zen/Go keep a stable key and stay outside this exact-route gate.
+export function stripUnissuedEncryptedReasoning(input) {
+  if (!Array.isArray(input)) return input;
+  let changed = false;
+  const next = [];
+  for (const item of input) {
+    if (item?.type !== "reasoning" || item.encrypted_content === undefined) {
+      next.push(item);
+      continue;
+    }
+    changed = true;
+    const { encrypted_content: _encryptedContent, ...rest } = item;
+    if (reasoningItemHasVisibleText(rest)) next.push(rest);
+  }
+  return changed ? next : input;
+}
+
+export function stripUnissuedEncryptedReasoningInclude(include) {
+  if (!Array.isArray(include)) return include;
+  const next = include.filter((entry) => entry !== REASONING_ENCRYPTED_INCLUDE);
+  if (next.length === include.length) return include;
+  return next.length > 0 ? next : undefined;
 }
 
 function flattenNamespaceChild(namespace, fn, providerName) {

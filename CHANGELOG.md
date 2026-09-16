@@ -1,7 +1,44 @@
 # Changelog
 
 ## Unreleased
+- **Muse Spark 1.3 Free no longer 400s on follow-up turns.** OpenCode Zen's
+  anonymous Responses route is a Console proxy, so Meta-issued reasoning
+  `encrypted_content` is bound to Console's caller, not this router. Replaying
+  it came back as HTTP 400 "reasoning `encrypted_content` was not issued to this
+  caller". The exact Muse Contributor Free Responses gate now drops that
+  continuation token (keeping any summary text) and stops asking for it on
+  `include`. Paid Zen/Go keep a stable key and are unchanged.
 
+- **OpenCode Go no longer 400s a follow-up after `apply_patch`.** The
+  custom→function bridge rewrote `custom_tool_call_output` to
+  `function_call_output` and kept the item `id` (`ctco_…`). Console Go
+  requires function-shaped ids to begin with `fc`, so the next turn failed
+  with that id at the same index and stayed broken for the rest of the
+  thread (#780). The bridge now omits a non-`fc` string `id` on the rewritten
+  call and output; `call_id` still pairs them. A native-minted `fc…` id is
+  kept.
+
+- **A multiline string in `config.toml` is no longer edited as if it were
+  settings.** The root-level helpers found assignments by matching lines, so a
+  line inside a multiline string -- prose in `instructions`, a documented
+  example -- counted as one whenever it was shaped like `model = ...`. Because
+  it came first, it was the line that got rewritten, deleted when a value
+  moved, and read back as the current setting. Switching the model edited the
+  user's prose and left the real `model` untouched; enabling the router deleted
+  a line out of the middle of their text; and the router journalled the prose
+  as the previous value, so turning it off restored that. All of it silent, and
+  the setting the user asked for never changed. These helpers now locate the
+  assignment through `scanTomlDocument` -- the fail-closed structural lexer this
+  file already uses for table boundaries, which exists to tell a real
+  assignment from text that looks like one. String values are decoded by the
+  lexer, including trailing comments. Root reads and writes scan the same root
+  section, even when a later table contains an invalid escape. Catalog removal,
+  concurrency detection, and managed-marker insertion also respect structure.
+  Multiline root settings are refused rather than partially removed, and
+  login-free in-place changes retain strict whole-document validation.
+  Legacy malformed root sections retain their best-effort line matching so
+  Windows prototype installations can still be disabled; prose preservation
+  is only guaranteed when that root section can be scanned.
 - **Routed models can be published ahead of the native GPT picker entries.**
   Codex renders its picker by `priority`, and routed models always landed in a
   band after the highest visible native entry, so an operator whose everyday
@@ -59,6 +96,14 @@
   outlier live — and that inventory is now derived from the registry, so the
   next Flash route cannot be omitted silently. `compHash` is bumped, so rebuild
   the catalog and fully quit and reopen Codex to pick up the new threshold.
+- **A failed script install no longer leaves POSIX users stuck on the rollback
+  revision.** After setup fails, the checkout is detached at the previous
+  commit by design so the service is not left on half-applied code. Windows
+  and `./bin/update` already switched that state back to `main` before the
+  next fetch; `install.sh` refused instead because it was not on `main`. A
+  Homebrew user who then installed from the script could stay on
+  `refs/codex-router/rollback` and keep serving the tree that predates
+  `x-opencode-session` (#761). A retry now restores `main` the same way.
 
 ## 0.6.0
 

@@ -22,6 +22,8 @@ import {
   rewriteNamespaceResponsePayload,
   repairToolSchemaRoots,
   stripSearchContentTypes,
+  stripUnissuedEncryptedReasoning,
+  stripUnissuedEncryptedReasoningInclude,
   stripUnsupportedOpenCodeSearchFields,
   ToolSearchHistoryCapacityError,
 } from "../src/namespace-relay.mjs";
@@ -3850,6 +3852,66 @@ test("OpenCode input repair preserves collaboration text and inherited images", 
   assert.equal(compatible[0].content[1].detail, "auto");
 });
 
+// OpenCode Console 400s Muse Free follow-ups that replay Meta-issued
+// reasoning encrypted_content: "was not issued to this caller". Drop the
+// continuation token, keep visible summary text, and leave unrelated items
+// by identity.
+test("OpenCode reasoning repair drops encrypted_content Console did not issue", () => {
+  const user = { type: "message", role: "user", content: "hi" };
+  const withSummary = {
+    type: "reasoning",
+    id: "rs_1",
+    encrypted_content: "gAAAAAforeign",
+    summary: [{ type: "summary_text", text: "thought" }],
+  };
+  const tokenOnly = {
+    type: "reasoning",
+    id: "rs_2",
+    encrypted_content: "gAAAAAforeign2",
+  };
+  const untouched = {
+    type: "reasoning",
+    id: "rs_3",
+    summary: [{ type: "summary_text", text: "kept" }],
+  };
+  const input = [user, withSummary, tokenOnly, untouched];
+  const stripped = stripUnissuedEncryptedReasoning(input);
+  assert.notEqual(stripped, input);
+  assert.deepEqual(stripped, [
+    user,
+    {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [{ type: "summary_text", text: "thought" }],
+    },
+    untouched,
+  ]);
+  assert.equal(stripped[2], untouched);
+});
+
+test("OpenCode reasoning repair leaves input without encrypted_content by identity", () => {
+  const input = [{ type: "message", role: "user", content: "hi" }];
+  assert.equal(stripUnissuedEncryptedReasoning(input), input);
+  assert.equal(stripUnissuedEncryptedReasoning("plain"), "plain");
+});
+
+test("OpenCode include repair drops reasoning.encrypted_content", () => {
+  assert.deepEqual(
+    stripUnissuedEncryptedReasoningInclude([
+      "file_search_call.results",
+      "reasoning.encrypted_content",
+    ]),
+    ["file_search_call.results"],
+  );
+  assert.equal(
+    stripUnissuedEncryptedReasoningInclude(["reasoning.encrypted_content"]),
+    undefined,
+  );
+  const include = ["file_search_call.results"];
+  assert.equal(stripUnissuedEncryptedReasoningInclude(include), include);
+  assert.equal(stripUnissuedEncryptedReasoningInclude(undefined), undefined);
+});
+
 // Codex ships apply_patch as a custom tool whose lark grammar is the only
 // place the V4A patch dialect is written down: the native definition carries
 // no description at all. A fixture with a permissive `start: /.+/` and a
@@ -3918,13 +3980,14 @@ test("custom-tool bridge maps apply_patch definitions and paired history lossles
   assert.deepEqual(bridged.tools[1], ordinary);
   assert.deepEqual(bridged.toolChoice, { type: "function", name: "apply_patch" });
   assert.deepEqual(bridged.input[0], {
-    id: "ctc_1",
     call_id: "call_patch_1",
     type: "function_call",
     name: "apply_patch",
     arguments: JSON.stringify({ input: patch }),
   });
   assert.equal(bridged.input[1].type, "function_call_output");
+  assert.equal(Object.hasOwn(bridged.input[1], "id"), false);
+  assert.equal(bridged.input[1].call_id, "call_patch_1");
   assert.deepEqual(bridged.input[2], unrelatedCall);
   assert.equal(buildNamespaceLookups(namespaces).customTools.get("apply_patch"), "apply_patch");
 });
@@ -3991,7 +4054,7 @@ test("Grok 4.6 OAuth appends V4A examples to native custom apply_patch before tr
   assert.deepEqual(bridged.tools[1], ordinary);
   assert.ok(bridged.tools[0].description.includes(V4A_GRAMMAR));
   assert.ok(bridged.tools[0].description.includes(GROK_APPLY_PATCH_CREATE_EXAMPLE));
-  assert.equal(bridged.input[0].id, "ctc_keep");
+  assert.equal(Object.hasOwn(bridged.input[0], "id"), false);
   assert.equal(bridged.input[0].call_id, "call_keep");
   assert.equal(bridged.input[0].name, "codex_custom_apply_patch");
   assert.deepEqual(JSON.parse(bridged.input[0].arguments), {
@@ -4201,6 +4264,54 @@ test("strict custom bridging covers non-apply_patch definitions, history, and ch
   assert.equal(bridged.input[0].type, "function_call");
   assert.deepEqual(JSON.parse(bridged.input[0].arguments), { input: "opaque" });
   assert.equal(bridged.input[1].type, "function_call_output");
+});
+
+test("custom-tool bridge omits non-fc item ids on the rewritten function pair", () => {
+  const flattened = flattenNamespaceTools([], { maxNameLength: 64 });
+  const bridged = bridgeCustomTools(
+    [{ type: "custom", name: "apply_patch" }],
+    [
+      {
+        type: "custom_tool_call",
+        id: "ctc_patch",
+        name: "apply_patch",
+        call_id: "call_patch",
+        input: "*** Begin Patch\n*** End Patch",
+      },
+      {
+        type: "custom_tool_call_output",
+        id: "ctco_patch",
+        call_id: "call_patch",
+        output: "Done!",
+      },
+      {
+        type: "custom_tool_call",
+        id: "fc_keep",
+        name: "apply_patch",
+        call_id: "call_keep",
+        input: "*** Begin Patch\n*** End Patch",
+      },
+      {
+        type: "custom_tool_call_output",
+        id: "fc_keep_out",
+        call_id: "call_keep",
+        output: "Done!",
+      },
+    ],
+    flattened.namespaces,
+    undefined,
+    ["apply_patch"],
+    { maxNameLength: 64, bridgeAll: true },
+  );
+  const patchCall = bridged.input.find((item) => item.call_id === "call_patch" && item.type === "function_call");
+  const patchOutput = bridged.input.find((item) => item.call_id === "call_patch" && item.type === "function_call_output");
+  const keptCall = bridged.input.find((item) => item.call_id === "call_keep" && item.type === "function_call");
+  const keptOutput = bridged.input.find((item) => item.call_id === "call_keep" && item.type === "function_call_output");
+  assert.equal(Object.hasOwn(patchCall, "id"), false);
+  assert.equal(Object.hasOwn(patchOutput, "id"), false);
+  assert.equal(patchOutput.call_id, "call_patch");
+  assert.equal(keptCall.id, "fc_keep");
+  assert.equal(keptOutput.id, "fc_keep_out");
 });
 
 test("custom-tool bridge reserves native namespace names and restores the aliased call", () => {

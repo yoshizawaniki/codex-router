@@ -1998,11 +1998,17 @@ function goCompatibilityRequestPayload(
       { type: "function_call_output", call_id: "history-discovered", output: "done" },
       {
         type: "custom_tool_call",
+        id: "ctc_history_patch",
         name: "apply_patch",
         call_id: "history-patch",
         input: GO_PATCH,
       },
-      { type: "custom_tool_call_output", call_id: "history-patch", output: "Done!" },
+      {
+        type: "custom_tool_call_output",
+        id: "ctco_history_patch",
+        call_id: "history-patch",
+        output: "Done!",
+      },
       {
         type: "custom_tool_call",
         name: "future_custom",
@@ -2143,6 +2149,14 @@ test("OpenCode Go Responses uses one bounded function-tool contract in both resp
       outgoing.input.find((item) => item.call_id === "history-patch").type,
       "function_call",
     );
+    const patchCall = outgoing.input.find(
+      (item) => item.call_id === "history-patch" && item.type === "function_call",
+    );
+    const patchOutput = outgoing.input.find(
+      (item) => item.call_id === "history-patch" && item.type === "function_call_output",
+    );
+    assert.equal(Object.hasOwn(patchCall, "id"), false);
+    assert.equal(Object.hasOwn(patchOutput, "id"), false);
     const futureCustom = outgoing.input.find(
       (item) => item.call_id === "history-future-custom" && item.type === "function_call",
     );
@@ -2492,7 +2506,7 @@ test("Grok structured patch opt-in crosses the real Router with collision, choic
     assert.deepEqual(outgoing.tool_choice, { type: "function", name: tool.name });
     const old = outgoing.input.find((item) => item.call_id === "call_history");
     assert.equal(old.name, tool.name);
-    assert.equal(old.id, "ctc_history");
+    assert.equal(Object.hasOwn(old, "id"), false);
     assert.equal(JSON.parse(old.arguments).input, grokApplyPatchPayload(stream, outgoing.model).input[1].input);
     assert.deepEqual(outgoing.input.find((item) => item.type === "function_call_output"), { type: "function_call_output", call_id: "call_history", output: "Done!" });
     const items = stream ? responseItemsFromSse(result.clientBody) : JSON.parse(result.clientBody).output;
