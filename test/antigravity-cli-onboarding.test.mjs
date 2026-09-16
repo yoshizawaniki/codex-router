@@ -33,12 +33,12 @@ function isolatedEnvironment(testRoot, extra = {}) {
   };
 }
 
-function runNode(args, env, { cwd = root } = {}) {
+function runNode(args, env, { cwd = root, timeout = 10_000 } = {}) {
   return spawnSync(process.execPath, args, {
     cwd,
     env,
     encoding: "utf8",
-    timeout: 10_000,
+    timeout,
   });
 }
 
@@ -189,9 +189,10 @@ test("the Antigravity probe refuses misspelled consent and provisioning flags", 
         "--provison-project",
       ],
       isolatedEnvironment(testRoot),
+      { timeout: 30_000 },
     );
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Unknown Antigravity probe option: --provison-project/);
+    assert.equal(result.status, 1, result.error?.code || `signal=${result.signal}`);
+    assert.ok(/Unknown Antigravity probe option: --provison-project/.test(result.stderr), "misspelled option was not rejected");
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
