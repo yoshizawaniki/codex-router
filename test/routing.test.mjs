@@ -12805,3 +12805,83 @@ test("an in-contract Chat route still carries its reasoning as thinking", async 
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("Console Go Muse strips reasoning encrypted_content Console did not issue to this caller", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET") {
+      json(response, 200, { ok: true, credential_present: true });
+      return;
+    }
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp_go_muse_encrypted",
+      object: "response",
+      status: "completed",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "ok" }],
+      }],
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const input = [
+    { type: "message", role: "user", content: "Continue." },
+    {
+      type: "reasoning",
+      id: "rs_keep",
+      encrypted_content: "gAAAAAforeign",
+      summary: [{ type: "summary_text", text: "prior thought" }],
+    },
+    { type: "reasoning", id: "rs_drop", encrypted_content: "gAAAAAforeign2" },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const slug of [
+      "opencode-go-responses/muse-spark-1.2-contributor",
+      "opencode-go-responses/muse-spark-1.3-contributor",
+      "opencode-go-responses/gpt-5.6-luna",
+    ]) {
+      const response = await fetch(`${routerBase(routerPort)}/responses`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${CALLER_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: slug,
+          stream: false,
+          include: ["reasoning.encrypted_content"],
+          input,
+        }),
+      });
+      assert.equal(response.status, 200, router.testErrors());
+    }
+
+    assert.equal(gatewayRequests.length, 3);
+    for (const request of gatewayRequests.slice(0, 2)) {
+      assert.equal(request.include, undefined);
+      assert.deepEqual(
+        request.input.filter((item) => item.type === "reasoning"),
+        [{
+          type: "reasoning",
+          id: "rs_keep",
+          summary: [{ type: "summary_text", text: "prior thought" }],
+        }],
+      );
+    }
+    // Other Console Go Responses models keep their continuation tokens.
+    assert.deepEqual(gatewayRequests[2].include, ["reasoning.encrypted_content"]);
+    assert.ok(gatewayRequests[2].input.some((item) => item.encrypted_content === "gAAAAAforeign"));
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});

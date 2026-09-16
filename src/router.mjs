@@ -1092,8 +1092,20 @@ function zenFreeCompatibleInput(input, route) {
   );
 }
 
+// Console Go's Muse Contributor route is also a Console proxy: follow-up turns
+// replaying reasoning `encrypted_content` 400 with "was not issued to this
+// caller", exactly like the free route. Keep the gate to those measured models.
+function dropsUnissuedEncryptedReasoning(route) {
+  return (
+    needsZenFreeToolCompatibility(route) ||
+    (providerForModel(route)?.id === "opencode-go-responses" &&
+      (route.upstreamModel === "muse-spark-1.2-contributor" ||
+        route.upstreamModel === "muse-spark-1.3-contributor"))
+  );
+}
+
 function applyZenFreeIncludeCompatibility(payload, route) {
-  if (!needsZenFreeToolCompatibility(route)) return payload;
+  if (!dropsUnissuedEncryptedReasoning(route)) return payload;
   const include = stripUnissuedEncryptedReasoningInclude(payload.include);
   if (include === payload.include) return payload;
   const next = { ...payload };
@@ -1104,9 +1116,11 @@ function applyZenFreeIncludeCompatibility(payload, route) {
 
 function publicResponsesCompatibleInput(input, route) {
   const compatible = zenFreeCompatibleInput(input, route);
-  return needsConsoleGoResponsesToolCompatibility(route)
-    ? agentMessagesAsUserMessages(compatible)
-    : compatible;
+  if (!needsConsoleGoResponsesToolCompatibility(route)) return compatible;
+  const goCompatible = agentMessagesAsUserMessages(compatible);
+  return dropsUnissuedEncryptedReasoning(route)
+    ? stripUnissuedEncryptedReasoning(goCompatible)
+    : goCompatible;
 }
 
 function nativeTarget(pathname, search = "") {
