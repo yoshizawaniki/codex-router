@@ -75,6 +75,91 @@ function candidates() {
   return codexCandidatePaths();
 }
 
+function parsedVersion(value) {
+  const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\s|$)/.exec(
+    String(value || ""),
+  );
+  if (!match) return undefined;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function comparePrerelease(left, right) {
+  if (left.length === 0 && right.length === 0) return 0;
+  if (left.length === 0) return 1;
+  if (right.length === 0) return -1;
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    if (left[index] === undefined) return -1;
+    if (right[index] === undefined) return 1;
+    const leftNumeric = /^\d+$/.test(left[index]);
+    const rightNumeric = /^\d+$/.test(right[index]);
+    if (leftNumeric && rightNumeric) {
+      const delta = Number(left[index]) - Number(right[index]);
+      if (delta !== 0) return Math.sign(delta);
+      continue;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    const delta = left[index].localeCompare(right[index]);
+    if (delta !== 0) return Math.sign(delta);
+  }
+  return 0;
+}
+
+export function compareCodexVersionStrings(left, right) {
+  const a = parsedVersion(left);
+  const b = parsedVersion(right);
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  for (let index = 0; index < a.core.length; index += 1) {
+    if (a.core[index] !== b.core[index]) {
+      return Math.sign(a.core[index] - b.core[index]);
+    }
+  }
+  return comparePrerelease(a.prerelease, b.prerelease);
+}
+
+function binaryVersion(binary, platform = process.platform) {
+  try {
+    const target = spawnableCommand(binary, ["--version"], platform);
+    const output = execFileSync(target.command, target.args, {
+      ...target.options,
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    return String(output || "").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function selectNewestCodexCandidate(
+  candidatePaths,
+  {
+    platform = process.platform,
+    versionOf = (binary) => binaryVersion(binary, platform),
+  } = {},
+) {
+  const paths = [...new Set((candidatePaths || []).filter(Boolean))];
+  if (paths.length === 0 || platform !== "win32") return paths[0];
+
+  let selected = paths[0];
+  let selectedVersion = versionOf(selected);
+  for (const candidate of paths.slice(1)) {
+    const candidateVersion = versionOf(candidate);
+    if (compareCodexVersionStrings(candidateVersion, selectedVersion) > 0) {
+      selected = candidate;
+      selectedVersion = candidateVersion;
+    }
+  }
+  return selected;
+}
+
 // The router must never resolve `codex` to the shim it installs in front of it.
 //
 // The shim's job is to guarantee the router is listening before Codex starts,
@@ -87,10 +172,29 @@ function candidates() {
 // candidate below *and* a directory `chooseShimDirectory` may install into,
 // because it restricts itself to the home directory.
 export function findCodexBinary() {
-  const direct = candidates().find(
+  const explicit = [
+    process.env.CODEX_BIN,
+    process.env.CODEX_INSTALL_DIR &&
+      path.join(
+        process.env.CODEX_INSTALL_DIR,
+        process.platform === "win32" ? "codex.exe" : "codex",
+      ),
+  ].filter(Boolean);
+  const explicitDirect = explicit.find(
     (candidate) => existsSync(candidate) && !isShimFile(candidate),
   );
-  if (direct) return direct;
+  if (explicitDirect) return explicitDirect;
+
+  const automatic = candidates()
+    .filter((candidate) => !explicit.includes(candidate))
+    .filter((candidate) => existsSync(candidate) && !isShimFile(candidate));
+  // Windows can retain a standalone CLI while Desktop updates its own hashed
+  // runtime independently. The ChatGPT model endpoint gates native models on
+  // client_version, so fixed path priority can make a newer Desktop lose newly
+  // released models. Compare the installed official candidates instead.
+  const selected = selectNewestCodexCandidate(automatic);
+  if (selected) return selected;
+
   // Never the raw first line of the finder: on Windows that is the
   // extensionless npm shim, which Node cannot spawn. See spawnable-command.mjs.
   const found = commandOnPath("codex");

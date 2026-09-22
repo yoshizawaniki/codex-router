@@ -7,9 +7,11 @@ import test from "node:test";
 import {
   codexBinaryFingerprint,
   codexCandidatePaths,
+  compareCodexVersionStrings,
   findCodexBinary,
   linuxDesktopAppBundledCodex,
   preferSpawnablePath,
+  selectNewestCodexCandidate,
   spawnableCommand,
 } from "../src/codex-binary.mjs";
 
@@ -47,6 +49,40 @@ test("keeps the first match on POSIX, where every entry is spawnable", () => {
 
 test("falls back to the first entry when nothing looks spawnable", () => {
   assert.equal(preferSpawnablePath(["C:\\odd\\codex"], "win32"), "C:\\odd\\codex");
+});
+
+test("selects the newest installed Codex on Windows instead of fixed path priority", () => {
+  const standalone = "C:\\Users\\tester\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe";
+  const desktop = "C:\\Users\\tester\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe";
+  const versions = new Map([
+    [standalone, "codex-cli 0.155.1"],
+    [desktop, "codex-cli 0.156.0-alpha.16"],
+  ]);
+  assert.equal(
+    selectNewestCodexCandidate([standalone, desktop], {
+      platform: "win32",
+      versionOf: (binary) => versions.get(binary),
+    }),
+    desktop,
+  );
+});
+
+test("keeps the existing candidate order when installed Codex versions are equal", () => {
+  const standalone = "C:\\standalone\\codex.exe";
+  const desktop = "C:\\desktop\\codex.exe";
+  assert.equal(
+    selectNewestCodexCandidate([standalone, desktop], {
+      platform: "win32",
+      versionOf: () => "codex-cli 0.155.1",
+    }),
+    standalone,
+  );
+});
+
+test("compares Codex prereleases using semver ordering", () => {
+  assert.equal(compareCodexVersionStrings("0.156.0-alpha.16", "0.155.1"), 1);
+  assert.equal(compareCodexVersionStrings("0.156.0", "0.156.0-alpha.16"), 1);
+  assert.equal(compareCodexVersionStrings("0.156.0-alpha.16", "0.156.0-alpha.9"), 1);
 });
 
 test("ignores blank lines in finder output", () => {
