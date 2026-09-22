@@ -18,6 +18,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const posixOnly = process.platform === "win32" ? "packaged POSIX install tests are not Windows entry points" : false;
 
 function scratch(prefix) {
   return mkdtempSync(path.join(realpathSync(os.tmpdir()), prefix));
@@ -42,12 +43,12 @@ function runRefusal(packageManager, label) {
   });
 }
 
-test("bin/install is valid POSIX shell", () => {
+test("bin/install is valid POSIX shell", { skip: posixOnly }, () => {
   const result = spawnSync("sh", ["-n", path.join(root, "bin", "install")], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("a Homebrew install is told to use brew reinstall", () => {
+test("a Homebrew install is told to use brew reinstall", { skip: posixOnly }, () => {
   // The alternative is npm or uv failing on EACCES inside the keg, which names
   // a path the user cannot write and no command that would fix it.
   const result = runRefusal("homebrew", "LiteLLM");
@@ -57,7 +58,7 @@ test("a Homebrew install is told to use brew reinstall", () => {
   assert.equal(result.stdout, "", "the refusal belongs on stderr");
 });
 
-test("an unrecognized package manager still gets an actionable refusal", () => {
+test("an unrecognized package manager still gets an actionable refusal", { skip: posixOnly }, () => {
   // The env var is deliberately not an enum -- a future scoop or apt package
   // sets its own name -- so the fallback has to say something useful.
   const result = runRefusal("scoop", "Node");

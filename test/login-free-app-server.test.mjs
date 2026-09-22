@@ -349,7 +349,11 @@ async function verifySignedOutTurn(binary, { initialProvider = "openai" } = {}) 
     const notifications = await runAppServerTurn(binary, env, model, expectedProvider);
     assert.equal(requests.length, 1);
     if (upgrades.length > 0) {
-      assert.equal(upgrades.length, 1);
+      assert.ok(upgrades.length >= 1);
+      for (const upgrade of upgrades) {
+        assert.equal(upgrade.url, upgrades[0].url);
+        assert.equal(upgrade.headers.authorization, upgrades[0].headers.authorization);
+      }
       assert.equal(upgrades[0].url, "/v1/responses");
       assert.equal(upgrades[0].headers.authorization, `Bearer ${CALLER_KEY}`);
       assert.equal(

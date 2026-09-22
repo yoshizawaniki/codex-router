@@ -27,6 +27,7 @@ import {
 } from "../src/tray-install.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const linuxOnly = process.platform !== "linux" ? "Linux companion scripts are Linux-only" : false;
 
 test("the packaged Control Center resolves per platform", () => {
   assert.equal(
@@ -143,7 +144,7 @@ test("Control Center packaging runs npm from its project directory", () => {
   assert.doesNotMatch(windows, /npm (?:ci|run|test).*--prefix/);
 });
 
-test("the Linux packager can stage without touching the live package", () => {
+test("the Linux packager can stage without touching the live package", { skip: linuxOnly }, () => {
   const scriptPath = path.join(root, "scripts", "build-electron-companion.sh");
   const script = readFileSync(scriptPath, "utf8");
   const syntax = spawnSync("sh", ["-n", scriptPath], { encoding: "utf8" });
@@ -203,7 +204,7 @@ test("platform launchers never choose Tauri by toolchain availability", () => {
   assert.doesNotMatch(linux, /command -v cargo|build-desktop-tray/);
 });
 
-test("Linux rebuilds use exact process identity and recover from package failure", () => {
+test("Linux rebuilds use exact process identity and recover from package failure", { skip: linuxOnly }, () => {
   const scriptPath = path.join(root, "bin", "model-router-tray");
   const linux = readFileSync(path.join(root, "bin", "model-router-tray"), "utf8");
   const syntax = spawnSync("sh", ["-n", scriptPath], { encoding: "utf8" });

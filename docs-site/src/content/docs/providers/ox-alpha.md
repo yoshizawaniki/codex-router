@@ -52,6 +52,14 @@ threshold avoids presenting those blank turns as usable context. OpenCode Go's
 content moderation still applies to the compaction request itself, so a
 sensitive transcript may be rejected even when the ordinary task turn worked.
 
+OpenCode Go withdrew its Union Alpha stealth preview and OpenRouter withdrew
+`stealth/union-alpha`; neither id is listed upstream any more and no route is
+checked in. Console Go still rejects a single message whose content exceeds
+2,500,000 characters, so an oversized ImageGen data URL is replaced with a
+labeled stub on every OpenCode Messages hop. Omen Alpha remains in the live Go
+catalog but is deprecated in OpenCode's models.dev record and is not checked
+in.
+
 Command Code and Venice still expose their live catalogs to explicit curation.
 An operator with an entitled account can inspect and select whatever those
 catalogs currently publish:

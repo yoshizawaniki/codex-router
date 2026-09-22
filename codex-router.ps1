@@ -388,7 +388,11 @@ function Restore-ControlCenterTaskSnapshot($TaskSnapshot) {
       $Restored.Sid -ne $Expected.Sid) {
     throw "The prior tray task did not retain its exact action and principal after restoration."
   }
-  if (-not (Test-SameControlCenterTaskSddl ([string]$TaskSnapshot.Sddl) (Get-ControlCenterTaskSddl $TaskName))) {
+  # Registration rewrites the stored DACL (auto-inherited flag, canonical ACE
+  # order), so the comparison has to be about the security identity rather than
+  # about the two SDDL strings being identical. See
+  # Test-SameControlCenterTaskSecurity for what is and is not still refused.
+  if (-not (Test-SameControlCenterTaskSecurity (Get-ControlCenterTaskSddl $TaskName) ([string]$TaskSnapshot.Sddl))) {
     throw "The prior tray task security descriptor did not survive restoration."
   }
   if ($TaskSnapshot.WasRunning) {
@@ -455,7 +459,7 @@ function Recover-ControlCenterUpdateTransaction {
         $CurrentTask.Execute $CurrentTask.Argument $Prior.Execute $Prior.Argument) -and
         [string]::Equals($CurrentTask.Xml, $Transaction.TaskSnapshot.Xml, [StringComparison]::Ordinal)
       $MatchesPrior = $MatchesPriorDocument -and
-        (Test-SameControlCenterTaskSddl $CurrentTask.Sddl $Transaction.TaskSnapshot.Sddl)
+        (Test-SameControlCenterTaskSecurity $CurrentTask.Sddl $Transaction.TaskSnapshot.Sddl)
       # Register-ScheduledTask publishes the prior XML before its exact SDDL is
       # restored. If that second step fails, the durable recovering phase plus
       # the byte-identical prior XML/action proves this is our own partial
@@ -637,49 +641,68 @@ function Test-SameControlCenterTaskAction(
   }
 }
 
-function Get-ControlCenterAceFingerprint($Ace) {
-  if ($Ace -is [Security.AccessControl.CommonAce]) {
-    $sid = if ($null -ne $Ace.SecurityIdentifier) { $Ace.SecurityIdentifier.Value } else { "" }
-    return ("common|type={0}|qual={1}|flags={2}|mask={3}|sid={4}" -f [int]$Ace.AceType, [int]$Ace.AceQualifier, [int]$Ace.AceFlags, $Ace.AccessMask, $sid)
+function Get-ControlCenterDaclAceIdentities($Descriptor) {
+  $Identities = @()
+  # A descriptor with no DACL has none to walk; wrapping $null in @() would
+  # otherwise iterate once and throw on the null entry.
+  if ($null -ne $Descriptor.DiscretionaryAcl) {
+    foreach ($Ace in $Descriptor.DiscretionaryAcl) {
+      # The binary form carries the ACE type, flags, access mask, and identity,
+      # which is exactly the part of an ACE that decides access. Comparing it
+      # keeps the check independent of how Task Scheduler orders the DACL.
+      # Windows PowerShell only exposes the buffer-taking overload.
+      $Buffer = New-Object byte[] $Ace.BinaryLength
+      [void]$Ace.GetBinaryForm($Buffer, 0)
+      $Identities += [Convert]::ToBase64String($Buffer)
+    }
   }
-  if ($Ace -is [Security.AccessControl.ObjectAce]) {
-    $sid = if ($null -ne $Ace.SecurityIdentifier) { $Ace.SecurityIdentifier.Value } else { "" }
-    $objectType = try { $Ace.ObjectAceType.ToString() } catch { "" }
-    $inheritedType = try { $Ace.InheritedObjectAceType.ToString() } catch { "" }
-    $objectFlags = try { [int]$Ace.ObjectAceFlags } catch { 0 }
-    return ("object|type={0}|flags={1}|mask={2}|sid={3}|obj={4}|inh={5}|objflags={6}" -f [int]$Ace.AceType, [int]$Ace.AceFlags, $Ace.AccessMask, $sid, $objectType, $inheritedType, $objectFlags)
-  }
-  $bytes = New-Object byte[] $Ace.BinaryLength
-  $Ace.GetBinaryForm($bytes, 0)
-  return ("raw|type={0}|flags={1}|bin={2}" -f [int]$Ace.AceType, [int]$Ace.AceFlags, [BitConverter]::ToString($bytes))
+  return @($Identities | Sort-Object)
 }
 
-function Test-SameControlCenterTaskSddl([string]$Left, [string]$Right) {
+# RawSecurityDescriptor.Control is not populated for a descriptor parsed from an
+# SDDL string, so the DACL's own flags are read from the D: section instead. The
+# auto-inherited marker is dropped because registering a task sets it; every
+# other flag (a protected DACL, an auto-inherit request, no access) still has to
+# match.
+function Get-ControlCenterDaclFlags([string]$Sddl) {
+  $Match = [regex]::Match([string]$Sddl, "D:(?<flags>[A-Z_]*)")
+  if (-not $Match.Success) { return "" }
+  $Remaining = $Match.Groups["flags"].Value.Replace("AI", "")
+  return -join @($Remaining.ToCharArray() | Sort-Object)
+}
+
+# Task Scheduler rewrites a task's security descriptor every time it registers
+# one: a DACL that holds an inherited ACE picks up the auto-inherited flag, and
+# the ACEs are stored in canonical order. Comparing the two SDDL strings
+# byte-for-byte therefore rejected a restored task that granted exactly what it
+# granted before, which is what made an interrupted Control Center replacement
+# impossible to recover. Compare the security identity instead: the owner, the
+# group, the DACL's remaining control flags, and the set of ACEs. A different
+# owner or group, a protected DACL, or an added, removed, or altered ACE still
+# fails, so the check stays fail-closed on anything that changes access.
+function Test-SameControlCenterTaskSecurity([string]$Left, [string]$Right) {
   try {
     $LeftDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Left)
     $RightDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Right)
     $LeftOwner = if ($null -ne $LeftDescriptor.Owner) { $LeftDescriptor.Owner.Value } else { "" }
     $RightOwner = if ($null -ne $RightDescriptor.Owner) { $RightDescriptor.Owner.Value } else { "" }
-    if (-not [string]::Equals($LeftOwner, $RightOwner, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($LeftOwner -ne $RightOwner) { return $false }
     $LeftGroup = if ($null -ne $LeftDescriptor.Group) { $LeftDescriptor.Group.Value } else { "" }
     $RightGroup = if ($null -ne $RightDescriptor.Group) { $RightDescriptor.Group.Value } else { "" }
-    if (-not [string]::Equals($LeftGroup, $RightGroup, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    $leftFlags = [int]$LeftDescriptor.ControlFlags
-    $rightFlags = [int]$RightDescriptor.ControlFlags
-    if ((($leftFlags -band 4096) -ne 0) -ne (($rightFlags -band 4096) -ne 0)) { return $false }
-    if ((($leftFlags -band 4) -ne 0) -ne (($rightFlags -band 4) -ne 0)) { return $false }
-    $leftDacl = $LeftDescriptor.DiscretionaryAcl
-    $rightDacl = $RightDescriptor.DiscretionaryAcl
-    if (($null -eq $leftDacl) -ne ($null -eq $rightDacl)) { return $false }
-    if ($null -eq $leftDacl) { return $true }
-    if ($leftDacl.Count -ne $rightDacl.Count) { return $false }
-    $leftKeys = @($leftDacl | ForEach-Object { Get-ControlCenterAceFingerprint $_ } | Sort-Object)
-    $rightKeys = @($rightDacl | ForEach-Object { Get-ControlCenterAceFingerprint $_ } | Sort-Object)
-    for ($i = 0; $i -lt $leftKeys.Count; $i++) {
-      if (-not [string]::Equals($leftKeys[$i], $rightKeys[$i], [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($LeftGroup -ne $RightGroup) { return $false }
+    # A missing DACL grants everyone full control and an empty one grants
+    # nobody, so the two must not be confused with each other.
+    if (($null -eq $LeftDescriptor.DiscretionaryAcl) -ne ($null -eq $RightDescriptor.DiscretionaryAcl)) { return $false }
+    if ((Get-ControlCenterDaclFlags $Left) -ne (Get-ControlCenterDaclFlags $Right)) { return $false }
+    $LeftAces = Get-ControlCenterDaclAceIdentities $LeftDescriptor
+    $RightAces = Get-ControlCenterDaclAceIdentities $RightDescriptor
+    if ($LeftAces.Count -ne $RightAces.Count) { return $false }
+    for ($Index = 0; $Index -lt $LeftAces.Count; $Index++) {
+      if ($LeftAces[$Index] -ne $RightAces[$Index]) { return $false }
     }
     return $true
   } catch {
+    # An unreadable descriptor is not the same descriptor.
     return $false
   }
 }

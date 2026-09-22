@@ -124,6 +124,25 @@ test("every background PowerShell invocation hides its console window", () => {
   );
 });
 
+test("the ordinary control re-exec inherits stdio instead of capturing it", () => {
+  // Issue #775 proposed `stdio: "capture"` here so a windowless Electron
+  // parent would not allocate a console. Capture ignores stdin
+  // (`["ignore", "pipe", "pipe"]` in process-tree), so Control Center
+  // credential writes would arrive empty. Windowless hide belongs to
+  // process-tree's inherit-without-TTY relay; this site must keep inherit.
+  const source = readFileSync(path.join(root, "src/control.mjs"), "utf8");
+  const match = source.match(
+    /await runOperationProcessTree\([\s\S]*?stdio:\s*("[^"]+"|[A-Za-z_$][\w$]*)/,
+  );
+  assert.ok(match, "expected the ordinary control re-exec");
+  assert.equal(match[1], '"inherit"');
+  assert.equal(
+    (source.match(/runOperationProcessTree\(/g) || []).length,
+    1,
+    "a second re-exec would need the same inherit contract",
+  );
+});
+
 test("the scan actually finds the PowerShell call sites it is guarding", () => {
   // A regex that silently stops matching would make the guard above pass for
   // the wrong reason, so assert the population it inspects.

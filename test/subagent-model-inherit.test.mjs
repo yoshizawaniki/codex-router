@@ -6,7 +6,7 @@ import {
   buildNamespaceLookups,
   flattenNamespaceTools,
   injectSessionModelForSpawnCalls,
-  normalizeModelForSpawnCalls,
+
   rewriteNamespaceResponsePayload,
 } from "../src/namespace-relay.mjs";
 
@@ -23,14 +23,14 @@ function spawnCall(name, namespace, argumentsText) {
   return item;
 }
 
-test("normalizeModelForSpawnCalls leaves omitted and explicit spawn_agent unchanged", () => {
+test("spawn-agent handling leaves omitted and explicit models unchanged", () => {
   const omitted = spawnCall("collaboration__spawn_agent", undefined, JSON.stringify({ message: "inspect" }));
   const explicit = spawnCall("collaboration__spawn_agent", undefined, JSON.stringify({ message: "inspect", model: "gpt-6-astra" }));
-  assert.equal(normalizeModelForSpawnCalls(omitted, SESSION_MODEL), omitted);
-  assert.equal(normalizeModelForSpawnCalls(explicit, SESSION_MODEL), explicit);
+  assert.equal(injectSessionModelForSpawnCalls(omitted, SESSION_MODEL), omitted);
+  assert.equal(injectSessionModelForSpawnCalls(explicit, SESSION_MODEL), explicit);
 });
 
-test("local thread and subagent spawns are eligible for routed model inheritance", () => {
+test("local thread and subagent spawns stay in the spawn-model handling set", () => {
   assert.deepEqual([...SPAWN_MODEL_TOOLS], ["create_thread", "spawn_agent"]);
 });
 
@@ -45,33 +45,22 @@ test("routed session + omitted model injects the session model (flattened form)"
   });
 });
 
-test("routed session + omitted model keeps a flattened subagent on its parent model", () => {
+test("routed session + omitted flattened subagent leaves model selection to Codex", () => {
   const item = spawnCall(
     "collaboration__spawn_agent",
     undefined,
     JSON.stringify({ task_name: "review", message: "inspect" }),
   );
-  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
-  assert.notEqual(next, item);
-  assert.deepEqual(JSON.parse(next.arguments), {
-    task_name: "review",
-    message: "inspect",
-    model: SESSION_MODEL,
-  });
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item);
 });
 
-test("routed session + omitted model keeps a native subagent on its parent model", () => {
+test("routed session + omitted native subagent leaves model selection to Codex", () => {
   const item = spawnCall(
     "spawn_agent",
     "collaboration",
     JSON.stringify({ task_name: "review", message: "inspect" }),
   );
-  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
-  assert.deepEqual(JSON.parse(next.arguments), {
-    task_name: "review",
-    message: "inspect",
-    model: SESSION_MODEL,
-  });
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item);
 });
 
 test("send_message_to_thread keeps the target thread model settings", () => {
@@ -118,13 +107,73 @@ test("an explicit subagent model is kept instead of pinned to the routed parent"
       JSON.stringify({ task_name: "review", message: "inspect", model: "gpt-5.6-sol" }),
     ),
   ]) {
-    assert.equal(normalizeModelForSpawnCalls(subagent, SESSION_MODEL), subagent);
+    assert.equal(injectSessionModelForSpawnCalls(subagent, SESSION_MODEL), subagent);
   }
 });
 
-test("an unusable spawn model still inherits the routed parent", () => {
-  // Absent, empty, and non-string values carry no override, so the child keeps
-  // the routed parent exactly as it did before.
+test("a named subagent model without an explicit depth receives the configured depth", () => {
+  // Native models have no router-published agent definition, so the relay is
+  // the only layer that can default the child to the operator's setting.
+  const item = spawnCall(
+    "collaboration__spawn_agent",
+    undefined,
+    JSON.stringify({ task_name: "worker", message: "audit", model: "gpt-5.6-luna" }),
+  );
+  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL, (slug) =>
+    slug === "gpt-5.6-luna" ? "high" : undefined,
+  );
+  assert.notEqual(next, item);
+  assert.deepEqual(JSON.parse(next.arguments), {
+    task_name: "worker",
+    message: "audit",
+    model: "gpt-5.6-luna",
+    reasoning_effort: "high",
+  });
+});
+
+test("an explicit subagent depth wins over the configured default", () => {
+  const item = spawnCall(
+    "spawn_agent",
+    "collaboration",
+    JSON.stringify({
+      task_name: "worker",
+      message: "audit",
+      model: "gpt-5.6-luna",
+      reasoning_effort: "low",
+    }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL, () => "high"), item);
+});
+
+test("a named subagent model with no configured depth keeps the catalog default", () => {
+  const item = spawnCall(
+    "collaboration__spawn_agent",
+    undefined,
+    JSON.stringify({ task_name: "worker", message: "audit", model: "gpt-5.6-luna" }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL, () => undefined), item);
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item);
+});
+
+test("an unnamed subagent keeps Codex default model and depth selection", () => {
+  const item = spawnCall(
+    "collaboration__spawn_agent",
+    undefined,
+    JSON.stringify({ task_name: "review", message: "inspect" }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL, () => "high"), item);
+});
+
+test("a new thread keeps its explicit model without a subagent depth", () => {
+  const item = spawnCall(
+    "codex_app__create_thread",
+    undefined,
+    JSON.stringify({ prompt: "hi", model: "gpt-5.6-luna" }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL, () => "high"), item);
+});
+
+test("an unusable subagent model is left for Codex to resolve", () => {
   const cases = [
     { task_name: "review", message: "inspect" },
     { task_name: "review", message: "inspect", model: "" },
@@ -137,9 +186,7 @@ test("an unusable spawn model still inherits the routed parent", () => {
       (value) => spawnCall("spawn_agent", "collaboration", JSON.stringify(value)),
     ]) {
       const subagent = build(args);
-      const next = injectSessionModelForSpawnCalls(subagent, SESSION_MODEL);
-      assert.notEqual(next, subagent);
-      assert.equal(JSON.parse(next.arguments).model, SESSION_MODEL);
+      assert.equal(injectSessionModelForSpawnCalls(subagent, SESSION_MODEL), subagent);
     }
   }
 });

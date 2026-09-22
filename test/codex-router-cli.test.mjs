@@ -37,7 +37,7 @@ function linkedCopy(target) {
   return { dir, link };
 }
 
-test("bin/codex-router is valid POSIX shell", () => {
+test("bin/codex-router is valid POSIX shell", { skip: posixOnly }, () => {
   const result = spawnSync("sh", ["-n", dispatcher], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
