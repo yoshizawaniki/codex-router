@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+- **Models you select no longer vanish from the desktop picker on large catalogs.**
+  The ChatGPT desktop app reads a single 100-entry page of Codex's
+  `model/list`, which Codex serves in priority order with hidden entries
+  included, and never asks for the next page. The published catalog
+  interleaved hidden routes with visible ones by priority, so on this host a
+  selected Step 5 Preview landed at entry 107 and never reached the picker while
+  the CLI listed it. Hidden entries are now published in a priority band after
+  the last visible model; visible priorities, and therefore the picker order
+  and the spawn_agent override window, are unchanged.
 - **A long session's images can no longer cross the provider's ceiling and fail
   the whole turn.** A conversation replays every image it still holds on every
   following turn, so a session that views screenshots grows until one request
